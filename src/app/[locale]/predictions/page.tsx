@@ -50,9 +50,13 @@ export default async function PredictionsPage({
             description={tCat(`${view.category}.description`)}
           />
 
-          {view.coupons.map((coupon) => (
-            <CouponCard key={coupon.id} coupon={coupon} isPreview={view.access === 'preview'} />
-          ))}
+          {view.coupons.length > 0 ? (
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {view.coupons.map((coupon) => (
+                <CouponCard key={coupon.id} coupon={coupon} isPreview={view.access === 'preview'} />
+              ))}
+            </div>
+          ) : null}
 
           {view.hidden && view.hidden.count > 0 ? (
             <LockedPanel

@@ -75,18 +75,18 @@
   },
   "categories": {
     "HIGH_CONFIDENCE": {
-      "name": "Yüksek Güven",
-      "short": "Yüksek Güven",
+      "name": "Banko",
+      "short": "Banko",
       "description": "Modellerin büyük ölçüde hemfikir olduğu, veri kalitesi yüksek ve oynaklığı düşük seçimler."
     },
     "BALANCED_PICKS": {
-      "name": "Dengeli Seçimler",
+      "name": "Dengeli",
       "short": "Dengeli",
       "description": "Olasılık, beklenen değer ve toplam oran arasında denge kuran seçimler."
     },
     "HIGH_VALUE": {
-      "name": "Yüksek Değer",
-      "short": "Yüksek Değer",
+      "name": "Sürpriz",
+      "short": "Sürpriz",
       "description": "Modelin piyasa fiyatına karşı anlamlı avantaj gördüğü, oynaklığı yüksek seçimler."
     },
     "COMBINATION_SYSTEM": {
@@ -110,7 +110,10 @@
     "valueOpportunities": "Değerli fırsatlar",
     "modelAgreement": "Model uyumu",
     "whyDescription": "Aşağıdaki her çubuk kayıtlı bir model çıktısıdır, yorum değildir.",
-    "model": "Model"
+    "model": "Model",
+    "openAnalysis": "Analiz",
+    "closeAnalysis": "Kapat",
+    "analysisFor": "Analiz — {reference}"
   },
   "metrics": {
     "odds": "Oran",
@@ -334,7 +337,24 @@
       "coverageDays": "Kapsam (gün)",
       "publishTimeLocal": "Yayın saati",
       "grouping": "Gruplama"
-    }
+    },
+    "couponEditor": "Kupon düzenleyici",
+    "couponEditorHint": "Seçim ekleyip çıkarın. Oran, olasılık ve BD her değişiklikte sunucuda yeniden hesaplanır.",
+    "matchControl": "Maç kontrolü",
+    "matchControlHint": "Bir maçı silmeden ve oran geçmişini kaybetmeden üretim dışı bırakın.",
+    "removeSelection": "Bu seçimi çıkar",
+    "remove": "Çıkar",
+    "add": "Ekle",
+    "addSelection": "Seçim ekle",
+    "deleteCoupon": "Kuponu sil",
+    "settledNotEditable": "Bu kupon sonuçlandı, artık geçmişin parçası.",
+    "prices": "Oran",
+    "predictions": "Tahmin",
+    "onCoupons": "Kuponlarda",
+    "inGeneration": "Üretimde",
+    "exclude": "Çıkar",
+    "include": "Dâhil et",
+    "exclusionReason": "Gerekçe"
   },
   "markets": {
     "MATCH_RESULT": "Maç Sonucu",
@@ -447,7 +467,12 @@
     "points": "P",
     "goalDifference": "AV",
     "form": "Form",
-    "noStandings": "Puan durumu, sonuçlar içe aktarıldığında görünür."
+    "noStandings": "Puan durumu, sonuçlar içe aktarıldığında görünür.",
+    "bestWin": "En yüksek oranlı tutan",
+    "latestWin": "En son tutan",
+    "noWinsYet": "Henüz sonuçlanmış kazanç yok",
+    "onDate": "{date}",
+    "legs": "maç"
   },
   "factors": {
     "modelAgreement": "Model uyumu",

@@ -22,7 +22,11 @@
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "db:sql": "prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script",
-    "admin:create": "tsx scripts/create-admin.ts"
+    "admin:create": "tsx scripts/create-admin.ts",
+    "scheduler": "tsx scripts/scheduler.ts",
+    "pipeline": "tsx scripts/run-pipeline.ts",
+    "backtest": "tsx scripts/run-backtest.ts",
+    "import:history": "tsx scripts/import-history.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

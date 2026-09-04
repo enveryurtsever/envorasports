@@ -31,6 +31,8 @@ export const MOBILE_NAV: NavItem[] = [
 
 export const ADMIN_NAV: NavItem[] = [
   { href: '/admin', labelKey: 'overview' },
+  { href: '/admin/coupons', labelKey: 'couponEditor' },
+  { href: '/admin/matches', labelKey: 'matchControl' },
   { href: '/admin/settings/coupons', labelKey: 'couponSettings' },
   { href: '/admin/settings/schedule', labelKey: 'scheduleSettings' },
   { href: '/admin/results', labelKey: 'results' },

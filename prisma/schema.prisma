@@ -333,14 +333,18 @@ model Match {
   extraTimeAwayScore Int? @map("extra_time_away_score")
 
   /// Result-sync bookkeeping (§37). Never used as prediction input.
-  resultLastSyncedAt    DateTime?  @map("result_last_synced_at")
-  resultSyncAttempts    Int        @default(0) @map("result_sync_attempts")
-  providerLastUpdatedAt DateTime?  @map("provider_last_updated_at")
+  resultLastSyncedAt     DateTime?  @map("result_last_synced_at")
+  resultSyncAttempts     Int        @default(0) @map("result_sync_attempts")
+  providerLastUpdatedAt  DateTime?  @map("provider_last_updated_at")
   /// The odds provider's event id, resolved once by name+kickoff matching and
   /// then reused, so later bulletin syncs are a direct lookup.
-  oddsEventExternalId   String?    @map("odds_event_external_id")
-  lineupType            LineupType @default(UNAVAILABLE) @map("lineup_type")
-  lineupAvailableAt     DateTime?  @map("lineup_available_at")
+  oddsEventExternalId    String?    @map("odds_event_external_id")
+  /// Operator override: keep this match out of prediction and coupon
+  /// generation without deleting it or its price history.
+  excludedFromGeneration Boolean    @default(false) @map("excluded_from_generation")
+  exclusionReason        String?    @map("exclusion_reason")
+  lineupType             LineupType @default(UNAVAILABLE) @map("lineup_type")
+  lineupAvailableAt      DateTime?  @map("lineup_available_at")
 
   fetchedAt DateTime @default(now()) @map("fetched_at")
   createdAt DateTime @default(now()) @map("created_at")

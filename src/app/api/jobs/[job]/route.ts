@@ -39,6 +39,7 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
 
   const url = new URL(request.url);
   const force = url.searchParams.get('force') === 'true';
+  const publicationDate = url.searchParams.get('publicationDate') ?? undefined;
   const divisions = url.searchParams.get('divisions')?.split(',').filter(Boolean);
   const seasons = url.searchParams
     .get('seasons')
@@ -46,7 +47,7 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
     .map(Number)
     .filter(Number.isInteger);
 
-  const outcome = await runNamedJob(job as JobName, { force, divisions, seasons });
+  const outcome = await runNamedJob(job as JobName, { force, publicationDate, divisions, seasons });
 
   // A skip is a normal outcome (not a publication day, quota exhausted, another
   // worker holds the lock), so it is 200 with a reason rather than an error.

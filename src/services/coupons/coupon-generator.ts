@@ -109,6 +109,7 @@ export async function loadCandidates(
       predictionTimestamp: { lte: asOf },
       match: {
         status: 'SCHEDULED',
+        excludedFromGeneration: false,
         scheduledKickoffUtc: { gte: window.startUtc, lt: window.endUtc },
       },
     },

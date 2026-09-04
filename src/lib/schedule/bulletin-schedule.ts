@@ -216,12 +216,31 @@ export interface ScheduleDecision {
 export function decideRun(
   schedule: BulletinSchedule,
   now: Date = new Date(),
-  options: { force?: boolean } = {},
+  options: { force?: boolean; publicationDate?: LocalDateKey } = {},
 ): ScheduleDecision {
   const today = todayInSchedule(schedule, now);
 
+  // An explicit date is a backfill: run the publication that day should have.
+  if (options.publicationDate) {
+    return {
+      shouldRun: true,
+      publicationDate: options.publicationDate,
+      reason: 'forced',
+      window: coverageWindow(options.publicationDate, schedule),
+    };
+  }
+
   if (options.force) {
-    return { shouldRun: true, publicationDate: today, reason: 'forced', window: coverageWindow(today, schedule) };
+    // "Run the bulletin" on a Friday means Thursday's bulletin, which covers
+    // Friday to Sunday — not a new Friday publication covering Saturday to
+    // Monday. Forcing must reproduce the schedule, not sidestep it.
+    const due = previousPublicationDate(today, schedule, { inclusive: true });
+    return {
+      shouldRun: true,
+      publicationDate: due,
+      reason: 'forced',
+      window: coverageWindow(due, schedule),
+    };
   }
   if (!schedule.enabled) {
     return { shouldRun: false, publicationDate: today, reason: 'disabled', window: null };

@@ -225,9 +225,11 @@ export const DEFAULT_SYSTEM_SETTINGS: SystemCouponSettings = {
   defaultSystemType: 'SYSTEM_3',
   minBaseSelections: 6,
   maxBaseSelections: 10,
-  stakePerColumn: 1,
-  maxTotalStake: 250,
-  currency: 'EUR',
+  stakePerColumn: 10,
+  maxTotalStake: 2500,
+  // The operator's own currency: system stakes are real money in TL, not a
+  // converted EUR figure.
+  currency: 'TRY',
   minCombinedProbability: 0.02,
   minExpectedValue: 0.02,
   maxCorrelation: 0.35,

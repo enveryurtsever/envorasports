@@ -40,9 +40,13 @@ export default async function SystemsPage({ params }: { params: Promise<{ locale
 
       <SectionHeading title={tCat('COMBINATION_SYSTEM.name')} />
 
-      {view.coupons.map((coupon) => (
-        <CouponCard key={coupon.id} coupon={coupon} />
-      ))}
+      {view.coupons.length > 0 ? (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {view.coupons.map((coupon) => (
+            <CouponCard key={coupon.id} coupon={coupon} />
+          ))}
+        </div>
+      ) : null}
 
       {view.hidden && view.hidden.count > 0 ? (
         <LockedPanel category="COMBINATION_SYSTEM" summary={view.hidden} />

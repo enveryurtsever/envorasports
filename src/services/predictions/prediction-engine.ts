@@ -305,6 +305,9 @@ export async function runPredictions(
     where: {
       scheduledKickoffUtc: { gte: options.from, lt: options.to },
       status: 'SCHEDULED',
+      // An operator-excluded match is left out entirely rather than predicted
+      // and then filtered later — nothing downstream can accidentally use it.
+      excludedFromGeneration: false,
       ...(options.leagueIds ? { leagueId: { in: options.leagueIds } } : {}),
     },
     select: {

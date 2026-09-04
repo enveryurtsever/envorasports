@@ -44,8 +44,13 @@ export type JobName =
   | 'historical-import';
 
 export interface JobRequest {
-  /** Runs a publication job outside its scheduled day (manual/backfill). */
+  /**
+   * Re-runs the publication that is currently due. On a non-publication day
+   * that is the most recent one, not today.
+   */
   force?: boolean;
+  /** Backfill a specific publication day, e.g. "2026-09-03". */
+  publicationDate?: string;
   /** historical-import only. */
   divisions?: string[];
   seasons?: number[];
@@ -60,7 +65,10 @@ export interface JobRequest {
  */
 export async function runBulletinPublication(request: JobRequest = {}): Promise<JobOutcome> {
   const schedule = await getBulletinSchedule();
-  const decision = decideRun(schedule, new Date(), { force: request.force });
+  const decision = decideRun(schedule, new Date(), {
+    force: request.force,
+    publicationDate: request.publicationDate,
+  });
 
   if (!decision.shouldRun || !decision.window) {
     await prisma.jobRun.create({

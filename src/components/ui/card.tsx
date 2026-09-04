@@ -28,32 +28,62 @@ export function PremiumCard({
   );
 }
 
+export type MetricTone = 'default' | 'emerald' | 'gold' | 'muted' | 'rose' | 'sky' | 'violet';
+
+/**
+ * Tone is a readability device, not decoration: it separates the good news from
+ * the bad at a glance. The value always carries its own text, so colour is
+ * never the only thing carrying the meaning.
+ */
+const TONE_TEXT: Record<MetricTone, string> = {
+  default: 'text-paper',
+  emerald: 'text-emerald-bright',
+  gold: 'text-gold-light',
+  muted: 'text-muted',
+  rose: 'text-rose-300',
+  sky: 'text-sky-300',
+  violet: 'text-violet-300',
+};
+
+const TONE_EDGE: Record<MetricTone, string> = {
+  default: 'before:bg-white/20',
+  emerald: 'before:bg-emerald-bright',
+  gold: 'before:bg-gold',
+  muted: 'before:bg-white/15',
+  rose: 'before:bg-rose-400',
+  sky: 'before:bg-sky-400',
+  violet: 'before:bg-violet-400',
+};
+
 export function MetricCard({
   label,
   value,
   hint,
   tone = 'default',
+  icon,
   className,
 }: {
   label: string;
   value: React.ReactNode;
   hint?: React.ReactNode;
-  tone?: 'default' | 'emerald' | 'gold' | 'muted';
+  tone?: MetricTone;
+  icon?: string;
   className?: string;
 }) {
   return (
-    <PremiumCard className={cn('flex flex-col gap-1.5 p-4', className)}>
-      <p className="text-xs font-medium tracking-wide text-muted uppercase">{label}</p>
-      <p
-        className={cn(
-          'tabular text-2xl leading-none font-semibold',
-          tone === 'emerald' && 'text-emerald-bright',
-          tone === 'gold' && 'text-gold-light',
-          tone === 'muted' && 'text-muted',
-        )}
-      >
-        {value}
+    <PremiumCard
+      className={cn(
+        'relative flex flex-col gap-1.5 overflow-hidden p-4',
+        'before:absolute before:inset-y-0 before:left-0 before:w-1 before:content-[""]',
+        TONE_EDGE[tone],
+        className,
+      )}
+    >
+      <p className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted uppercase">
+        {icon ? <span aria-hidden>{icon}</span> : null}
+        {label}
       </p>
+      <p className={cn('tabular text-2xl leading-none font-semibold', TONE_TEXT[tone])}>{value}</p>
       {hint ? <p className="text-xs text-muted-dark">{hint}</p> : null}
     </PremiumCard>
   );

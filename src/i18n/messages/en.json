@@ -75,18 +75,18 @@
   },
   "categories": {
     "HIGH_CONFIDENCE": {
-      "name": "High Confidence",
-      "short": "High Confidence",
+      "name": "Banker",
+      "short": "Banker",
       "description": "Lower variance selections with strong model agreement and solid data quality."
     },
     "BALANCED_PICKS": {
-      "name": "Balanced Picks",
+      "name": "Balanced",
       "short": "Balanced",
       "description": "A balance of probability, expected value and total odds."
     },
     "HIGH_VALUE": {
-      "name": "High Value",
-      "short": "High Value",
+      "name": "Surprise",
+      "short": "Surprise",
       "description": "Higher variance selections where the model sees a meaningful edge over the market price."
     },
     "COMBINATION_SYSTEM": {
@@ -110,7 +110,10 @@
     "valueOpportunities": "Value opportunities",
     "modelAgreement": "Model agreement",
     "whyDescription": "Every bar below is a stored model output, not a narrative.",
-    "model": "Model"
+    "model": "Model",
+    "openAnalysis": "Analysis",
+    "closeAnalysis": "Close",
+    "analysisFor": "Analysis — {reference}"
   },
   "metrics": {
     "odds": "Odds",
@@ -334,7 +337,24 @@
       "coverageDays": "Coverage (days)",
       "publishTimeLocal": "Publish time",
       "grouping": "Grouping"
-    }
+    },
+    "couponEditor": "Coupon editor",
+    "couponEditorHint": "Add or remove selections. Odds, probability and EV are recomputed server-side on every change.",
+    "matchControl": "Match control",
+    "matchControlHint": "Exclude a match from generation without deleting it or its price history.",
+    "removeSelection": "Remove this selection",
+    "remove": "Remove",
+    "add": "Add",
+    "addSelection": "Add a selection",
+    "deleteCoupon": "Delete coupon",
+    "settledNotEditable": "This coupon has been settled and is now history.",
+    "prices": "Prices",
+    "predictions": "Predictions",
+    "onCoupons": "On coupons",
+    "inGeneration": "In generation",
+    "exclude": "Exclude",
+    "include": "Include",
+    "exclusionReason": "Reason"
   },
   "markets": {
     "MATCH_RESULT": "Match Result",
@@ -442,12 +462,17 @@
     "pending": "Open",
     "noneGenerated": "Nothing generated for this week yet.",
     "popularMatches": "Most-priced matches this week",
-    "standings": "League standings",
+    "standings": "League tables",
     "played": "P",
     "points": "Pts",
     "goalDifference": "GD",
     "form": "Form",
-    "noStandings": "Standings appear once results have been imported."
+    "noStandings": "Standings appear once results have been imported.",
+    "bestWin": "Biggest win",
+    "latestWin": "Most recent win",
+    "noWinsYet": "No settled wins yet",
+    "onDate": "on {date}",
+    "legs": "legs"
   },
   "factors": {
     "modelAgreement": "Model agreement",

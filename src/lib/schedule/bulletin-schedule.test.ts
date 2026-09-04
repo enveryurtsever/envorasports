@@ -202,3 +202,27 @@ describe('bulletinWeek', () => {
     expect(previous.endDate).toBe('2026-09-06');
   });
 });
+
+describe('forcing a run reproduces the schedule', () => {
+  // Friday 2026-09-04, mid-evening in Istanbul.
+  const friday = new Date('2026-09-04T18:00:00Z');
+
+  it('runs Thursday’s bulletin when forced on a Friday', () => {
+    const decision = decideRun(schedule, friday, { force: true });
+
+    // Not a new Friday publication covering Sat-Mon.
+    expect(decision.publicationDate).toBe('2026-09-03');
+    expect(decision.window?.days).toEqual(['2026-09-04', '2026-09-05', '2026-09-06']);
+  });
+
+  it('keeps today when forced on an actual publication day', () => {
+    const thursday = new Date('2026-09-10T09:00:00Z');
+    expect(decideRun(schedule, thursday, { force: true }).publicationDate).toBe('2026-09-10');
+  });
+
+  it('backfills an explicit publication date', () => {
+    const decision = decideRun(schedule, friday, { publicationDate: '2026-08-31' });
+    expect(decision.publicationDate).toBe('2026-08-31');
+    expect(decision.window?.days).toEqual(['2026-09-01', '2026-09-02', '2026-09-03']);
+  });
+});

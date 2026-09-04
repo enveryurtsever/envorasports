@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db/prisma';
 import { getBulletinSchedule } from '@/lib/config/settings-service';
 import {
@@ -164,4 +165,57 @@ export function maxPotentialReturn(totalOdds: Decimal[], stake: Decimal): Decima
   if (totalOdds.length === 0) return dec(0);
   const best = totalOdds.reduce((max, odds) => (odds.greaterThan(max) ? odds : max), dec(0));
   return toMoney(best.times(stake));
+}
+
+export interface NotableWin {
+  reference: string;
+  category: CouponCategory;
+  totalOdds: number;
+  selectionCount: number;
+  targetDate: Date;
+  settledAt: Date | null;
+}
+
+/**
+ * The shop window: the biggest settled win and the most recent one.
+ *
+ * Both are real settled coupons with their dates attached — a claim a reader
+ * can check against the prediction history, not a marketing number.
+ */
+export async function getNotableWins(): Promise<{
+  biggest: NotableWin | null;
+  latest: NotableWin | null;
+}> {
+  const select = {
+    reference: true,
+    category: true,
+    totalOdds: true,
+    selectionCount: true,
+    targetDate: true,
+    settledAt: true,
+  } as const;
+
+  // PARTIAL_WIN counts: a system coupon that returned a profit did win.
+  const where: Prisma.CouponWhereInput = {
+    resultStatus: { in: ['WON', 'PARTIAL_WIN'] },
+  };
+
+  const [biggest, latest] = await Promise.all([
+    prisma.coupon.findFirst({ where, orderBy: { totalOdds: 'desc' }, select }),
+    prisma.coupon.findFirst({ where, orderBy: { settledAt: 'desc' }, select }),
+  ]);
+
+  const map = (row: typeof biggest): NotableWin | null =>
+    row
+      ? {
+          reference: row.reference,
+          category: row.category as CouponCategory,
+          totalOdds: Number(row.totalOdds),
+          selectionCount: row.selectionCount,
+          targetDate: row.targetDate,
+          settledAt: row.settledAt,
+        }
+      : null;
+
+  return { biggest: map(biggest), latest: map(latest) };
 }

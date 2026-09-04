@@ -225,3 +225,26 @@ export async function getMostPricedMatches(range: { from: Date; to: Date }, limi
       priceCount: match._count.odds,
     }));
 }
+
+/**
+ * The tables worth putting on the front page: Europe's big five plus the
+ * Süper Lig. Ordered deliberately rather than by row count, so the tab order is
+ * stable from day to day.
+ */
+export const FEATURED_DIVISIONS = ['E0', 'SP1', 'D1', 'I1', 'F1', 'T1'] as const;
+
+export async function getFeaturedStandings(): Promise<LeagueStandings[]> {
+  const leagues = await prisma.league.findMany({
+    where: { csvDivision: { in: [...FEATURED_DIVISIONS] } },
+    select: { id: true, csvDivision: true },
+  });
+
+  const byDivision = new Map(leagues.map((l) => [l.csvDivision, l.id]));
+  const ordered = FEATURED_DIVISIONS.map((division) => byDivision.get(division)).filter(
+    (id): id is string => Boolean(id),
+  );
+
+  const tables = await Promise.all(ordered.map((id) => getLeagueStandings(id)));
+  // A league with no imported results yet is dropped rather than shown empty.
+  return tables.filter((table): table is LeagueStandings => table !== null && table.rows.length > 0);
+}
