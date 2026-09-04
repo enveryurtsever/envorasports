@@ -1,0 +1,80 @@
+@import 'tailwindcss';
+
+/*
+ * EnvoraSports design tokens (§20).
+ *
+ * Emerald carries action, gold marks premium/Elite, and the ground is deep
+ * navy through near-black. Gold is an accent — the moment it becomes a
+ * background the product starts looking like the casino sites §20 rules out.
+ */
+@theme {
+  --color-emerald-primary: #059669;
+  --color-emerald-bright: #10b981;
+  --color-emerald-dim: #047857;
+
+  --color-navy-deep: #07111f;
+  --color-navy-dark: #0b1728;
+  --color-navy-raised: #0f1d31;
+  --color-ink: #05080d;
+
+  --color-gold: #d4af37;
+  --color-gold-light: #f4d77d;
+
+  --color-paper: #f8fafc;
+  --color-muted: #94a3b8;
+  --color-muted-dark: #64748b;
+
+  --color-danger: #e11d48;
+  --color-warning: #f59e0b;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  --radius-card: 0.875rem;
+}
+
+:root {
+  color-scheme: dark;
+  --surface: var(--color-navy-dark);
+  --surface-raised: var(--color-navy-raised);
+  --border-subtle: color-mix(in srgb, var(--color-paper) 10%, transparent);
+  --border-strong: color-mix(in srgb, var(--color-paper) 18%, transparent);
+}
+
+html {
+  background-color: var(--color-navy-deep);
+}
+
+body {
+  background:
+    radial-gradient(1100px 620px at 78% -12%, color-mix(in srgb, #059669 14%, transparent), transparent 62%),
+    var(--color-navy-deep);
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Keyboard users must always be able to see where they are (§25). */
+:focus-visible {
+  outline: 2px solid var(--color-emerald-bright);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Numeric columns line up only with tabular figures. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

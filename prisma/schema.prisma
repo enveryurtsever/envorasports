@@ -1,0 +1,1418 @@
+// ---------------------------------------------------------------------------
+// EnvoraSports — PostgreSQL schema (Prisma)
+//
+// Design rules enforced here (see CLAUDE_EnvoraSports_FINAL.md §5, §41, §57):
+//  1. Append-only history: odds, elo_ratings, team_form_snapshots,
+//     match_result_snapshots and predictions are never mutated in place.
+//  2. Every externally sourced row keeps externalId + source + fetchedAt.
+//  3. Betting markets are data, not columns. Adding a market never requires a
+//     migration on `matches`.
+//  4. Every prediction pins the modelVersion AND the settings snapshot used, so
+//     history stays reproducible after configuration changes.
+//  5. No leakage: everything the engine reads is timestamped, so a backtest can
+//     filter by "known at prediction time".
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// ENUMS
+// ===========================================================================
+
+enum Locale {
+  EN
+  TR
+}
+
+enum MatchStatus {
+  SCHEDULED
+  LIVE
+  HALF_TIME
+  FINISHED
+  POSTPONED
+  CANCELED
+  SUSPENDED
+  ABANDONED
+  AWARDED
+}
+
+enum LineupType {
+  CONFIRMED
+  PREDICTED
+  UNAVAILABLE
+}
+
+enum InjuryStatus {
+  OUT
+  DOUBTFUL
+  SUSPENDED
+  AVAILABLE
+}
+
+enum MarketCategory {
+  RESULT
+  GOALS
+  BOTH_TEAMS
+  HALVES
+  SCORE
+  HANDICAP
+  TEAM_TOTALS
+  CORNERS
+  CARDS
+  SPECIALS
+}
+
+/// Customer-facing labels (§29): HIGH_CONFIDENCE -> "High Confidence",
+/// BALANCED_PICKS -> "Balanced Picks", HIGH_VALUE -> "High Value".
+/// New categories can be added without touching the generation engine.
+enum CouponCategory {
+  HIGH_CONFIDENCE
+  BALANCED_PICKS
+  HIGH_VALUE
+  COMBINATION_SYSTEM
+}
+
+enum CouponKind {
+  STANDARD
+  SYSTEM
+}
+
+/// Result of a single prediction / selection (§32).
+enum SettlementStatus {
+  PENDING
+  WON
+  LOST
+  PUSHED
+  HALF_WON
+  HALF_LOST
+  VOID
+  CANCELED
+}
+
+/// Result of a whole coupon or a single system column (§33, §34).
+enum CouponResultStatus {
+  PENDING
+  WON
+  LOST
+  PARTIAL_WIN
+  VOID
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum PlanCode {
+  PLUS
+  PREMIUM
+  ELITE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+}
+
+enum SettingValueType {
+  STRING
+  NUMBER
+  DECIMAL
+  BOOLEAN
+  JSON
+}
+
+enum CoverageGrouping {
+  /// A separate set of coupons for each match day in the window.
+  PER_DAY
+  /// One set whose selections may span the whole window.
+  WINDOW
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+// ===========================================================================
+// I18N — provider-sourced names only.
+// Static vocabulary (markets, statuses, UI copy) lives in src/i18n/messages.
+// ===========================================================================
+
+/// Optional localized override for provider-sourced text (league/team/venue
+/// names). Falls back to the entity's own column when no row exists.
+model Translation {
+  id         String   @id @default(cuid())
+  entityType String   @map("entity_type") // "league" | "team" | "bookmaker" ...
+  entityId   String   @map("entity_id")
+  field      String // "name" | "shortName" | "country" ...
+  locale     Locale
+  value      String
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([entityType, entityId, field, locale])
+  @@index([entityType, entityId])
+  @@map("translations")
+}
+
+// ===========================================================================
+// FOOTBALL CORE
+// ===========================================================================
+
+model League {
+  id            String   @id @default(cuid())
+  externalId    String   @map("external_id")
+  source        String
+  name          String
+  country       String?
+  countryCode   String?  @map("country_code")
+  type          String? // "League" | "Cup" | ...
+  logo          String?
+  tier          Int?
+  /// The Odds API competition key, e.g. "soccer_epl". Null = not priced there.
+  oddsApiKey    String?  @map("odds_api_key")
+  /// API-Football league id, resolved once against /leagues and cached. Only
+  /// mapped leagues are ingested, which keeps a whole day's fixtures to one
+  /// request instead of one per competition.
+  apiFootballId Int?     @unique @map("api_football_id")
+  /// football-data.co.uk division code, e.g. "E0". Null = no historical CSV.
+  csvDivision   String?  @map("csv_division")
+  /// 0..1 — feeds the data-quality score (§44).
+  dataQuality   Decimal  @default(0.5) @map("data_quality") @db.Decimal(4, 3)
+  active        Boolean  @default(true)
+  fetchedAt     DateTime @default(now()) @map("fetched_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  seasons    Season[]
+  matches    Match[]
+  eloRatings EloRating[]
+
+  @@unique([source, externalId])
+  @@index([active, country])
+  @@map("leagues")
+}
+
+model Season {
+  id         String    @id @default(cuid())
+  leagueId   String    @map("league_id")
+  externalId String    @map("external_id")
+  source     String
+  name       String
+  startDate  DateTime? @map("start_date") @db.Date
+  endDate    DateTime? @map("end_date") @db.Date
+  current    Boolean   @default(false)
+  fetchedAt  DateTime  @default(now()) @map("fetched_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  league      League       @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+  matches     Match[]
+  teamSeasons TeamSeason[]
+
+  @@unique([source, externalId])
+  @@unique([leagueId, name])
+  @@index([leagueId, current])
+  @@map("seasons")
+}
+
+model Team {
+  id         String   @id @default(cuid())
+  externalId String   @map("external_id")
+  source     String
+  name       String
+  shortName  String?  @map("short_name")
+  country    String?
+  logo       String?
+  founded    Int?
+  venue      String?
+  active     Boolean  @default(true)
+  fetchedAt  DateTime @default(now()) @map("fetched_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  teamSeasons     TeamSeason[]
+  aliases         TeamAlias[]
+  homeMatches     Match[]            @relation("HomeTeam")
+  awayMatches     Match[]            @relation("AwayTeam")
+  matchStatistics MatchStatistic[]
+  formSnapshots   TeamFormSnapshot[]
+  eloRatings      EloRating[]
+  players         Player[]
+  injuries        Injury[]
+  lineups         Lineup[]
+  h2hAsHome       HeadToHead[]       @relation("H2HHome")
+  h2hAsAway       HeadToHead[]       @relation("H2HAway")
+
+  @@unique([source, externalId])
+  @@index([name])
+  @@map("teams")
+}
+
+/// Reconciles team naming across sources. API-Football says "Manchester
+/// United", football-data.co.uk says "Man United", The Odds API says
+/// "Manchester United FC". Matching on raw names alone silently drops fixtures,
+/// so every source name resolves through this table.
+model TeamAlias {
+  id         String   @id @default(cuid())
+  teamId     String   @map("team_id")
+  source     String
+  alias      String
+  /// Lowercased, punctuation-stripped form used for lookup.
+  normalized String
+  /// 0..1 — how the mapping was established (1 = manual/verified).
+  confidence Decimal  @default(1) @db.Decimal(4, 3)
+  verified   Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([source, normalized])
+  @@index([teamId])
+  @@index([normalized])
+  @@map("team_aliases")
+}
+
+model TeamSeason {
+  id        String   @id @default(cuid())
+  teamId    String   @map("team_id")
+  seasonId  String   @map("season_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  season Season @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, seasonId])
+  @@index([seasonId])
+  @@map("team_seasons")
+}
+
+model Match {
+  id         String @id @default(cuid())
+  externalId String @map("external_id")
+  source     String
+  leagueId   String @map("league_id")
+  seasonId   String @map("season_id")
+  homeTeamId String @map("home_team_id")
+  awayTeamId String @map("away_team_id")
+
+  /// Canonical UTC kickoff. Every scheduler decision uses this (§31).
+  scheduledKickoffUtc DateTime  @map("scheduled_kickoff_utc")
+  /// IANA timezone of the venue, for display only.
+  venueTimezone       String?   @map("venue_timezone")
+  startedAtUtc        DateTime? @map("started_at_utc")
+  finishedAtUtc       DateTime? @map("finished_at_utc")
+
+  status         MatchStatus @default(SCHEDULED)
+  providerStatus String?     @map("provider_status")
+  round          String?
+  venue          String?
+  referee        String?
+
+  homeScore          Int? @map("home_score")
+  awayScore          Int? @map("away_score")
+  halfTimeHomeScore  Int? @map("half_time_home_score")
+  halfTimeAwayScore  Int? @map("half_time_away_score")
+  extraTimeHomeScore Int? @map("extra_time_home_score")
+  extraTimeAwayScore Int? @map("extra_time_away_score")
+
+  /// Result-sync bookkeeping (§37). Never used as prediction input.
+  resultLastSyncedAt    DateTime?  @map("result_last_synced_at")
+  resultSyncAttempts    Int        @default(0) @map("result_sync_attempts")
+  providerLastUpdatedAt DateTime?  @map("provider_last_updated_at")
+  /// The odds provider's event id, resolved once by name+kickoff matching and
+  /// then reused, so later bulletin syncs are a direct lookup.
+  oddsEventExternalId   String?    @map("odds_event_external_id")
+  lineupType            LineupType @default(UNAVAILABLE) @map("lineup_type")
+  lineupAvailableAt     DateTime?  @map("lineup_available_at")
+
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  league   League @relation(fields: [leagueId], references: [id], onDelete: Restrict)
+  season   Season @relation(fields: [seasonId], references: [id], onDelete: Restrict)
+  homeTeam Team   @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Restrict)
+  awayTeam Team   @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Restrict)
+
+  statistics       MatchStatistic[]
+  odds             Odds[]
+  predictions      Prediction[]
+  lineups          Lineup[]
+  headToHead       HeadToHead[]
+  resultSnapshots  MatchResultSnapshot[]
+  couponSelections CouponSelection[]
+
+  @@unique([source, externalId])
+  @@index([scheduledKickoffUtc, status])
+  @@index([status, resultLastSyncedAt])
+  @@index([leagueId, scheduledKickoffUtc])
+  @@index([seasonId, scheduledKickoffUtc])
+  @@index([homeTeamId, scheduledKickoffUtc])
+  @@index([awayTeamId, scheduledKickoffUtc])
+  @@index([oddsEventExternalId])
+  @@map("matches")
+}
+
+model MatchStatistic {
+  id      String @id @default(cuid())
+  matchId String @map("match_id")
+  teamId  String @map("team_id")
+
+  possession           Decimal? @db.Decimal(5, 2)
+  shots                Int?
+  shotsOnTarget        Int?     @map("shots_on_target")
+  shotsOffTarget       Int?     @map("shots_off_target")
+  blockedShots         Int?     @map("blocked_shots")
+  corners              Int?
+  fouls                Int?
+  offsides             Int?
+  yellowCards          Int?     @map("yellow_cards")
+  redCards             Int?     @map("red_cards")
+  saves                Int?
+  passes               Int?
+  passAccuracy         Decimal? @map("pass_accuracy") @db.Decimal(5, 2)
+  expectedGoals        Decimal? @map("expected_goals") @db.Decimal(6, 3)
+  expectedGoalsAgainst Decimal? @map("expected_goals_against") @db.Decimal(6, 3)
+  /// Provider fields we do not model yet. Never read by the engine directly.
+  extra                Json?
+
+  source    String
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  team  Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, teamId])
+  @@index([teamId])
+  @@map("match_statistics")
+}
+
+/// Append-only audit of what the provider reported, for reproducibility (§37).
+model MatchResultSnapshot {
+  id                String      @id @default(cuid())
+  matchId           String      @map("match_id")
+  provider          String
+  providerStatus    String?     @map("provider_status")
+  status            MatchStatus
+  homeScore         Int?        @map("home_score")
+  awayScore         Int?        @map("away_score")
+  halfTimeHomeScore Int?        @map("half_time_home_score")
+  halfTimeAwayScore Int?        @map("half_time_away_score")
+  statisticsJson    Json?       @map("statistics_json")
+  capturedAt        DateTime    @default(now()) @map("captured_at")
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@index([matchId, capturedAt])
+  @@map("match_result_snapshots")
+}
+
+// ===========================================================================
+// FEATURES — all snapshot tables are append-only and dated, so a backtest can
+// ask "what did we know on date X?" without leakage (§57).
+// ===========================================================================
+
+model TeamFormSnapshot {
+  id           String   @id @default(cuid())
+  teamId       String   @map("team_id")
+  leagueId     String?  @map("league_id")
+  /// The form is valid *as of* this instant, computed only from matches that
+  /// finished strictly before it.
+  snapshotDate DateTime @map("snapshot_date")
+  /// "LAST_5" | "LAST_10" | "LAST_20" | "SEASON" — never hard-code one window.
+  window       String
+  /// "ALL" | "HOME" | "AWAY"
+  venueScope   String   @map("venue_scope")
+
+  matchesPlayed Int @map("matches_played")
+  wins          Int
+  draws         Int
+  losses        Int
+  goalsFor      Int @map("goals_for")
+  goalsAgainst  Int @map("goals_against")
+
+  averageGoalsFor     Decimal  @map("average_goals_for") @db.Decimal(6, 3)
+  averageGoalsAgainst Decimal  @map("average_goals_against") @db.Decimal(6, 3)
+  averageXg           Decimal? @map("average_xg") @db.Decimal(6, 3)
+  averageXga          Decimal? @map("average_xga") @db.Decimal(6, 3)
+  cleanSheetRate      Decimal  @map("clean_sheet_rate") @db.Decimal(5, 4)
+  bttsRate            Decimal  @map("btts_rate") @db.Decimal(5, 4)
+  over15Rate          Decimal  @map("over_1_5_rate") @db.Decimal(5, 4)
+  over25Rate          Decimal  @map("over_2_5_rate") @db.Decimal(5, 4)
+  over35Rate          Decimal  @map("over_3_5_rate") @db.Decimal(5, 4)
+
+  /// How much of the window was actually observed — feeds data quality.
+  sampleSize Int @map("sample_size")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, snapshotDate, window, venueScope])
+  @@index([teamId, snapshotDate])
+  @@map("team_form_snapshots")
+}
+
+model EloRating {
+  id            String   @id @default(cuid())
+  teamId        String   @map("team_id")
+  leagueId      String?  @map("league_id")
+  rating        Decimal  @db.Decimal(8, 3)
+  homeRating    Decimal? @map("home_rating") @db.Decimal(8, 3)
+  awayRating    Decimal? @map("away_rating") @db.Decimal(8, 3)
+  ratingDate    DateTime @map("rating_date")
+  matchesPlayed Int      @default(0) @map("matches_played")
+  /// Match that produced this rating; null for the initial seeding.
+  sourceMatchId String?  @map("source_match_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  team   Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  league League? @relation(fields: [leagueId], references: [id], onDelete: SetNull)
+
+  @@unique([teamId, ratingDate])
+  @@index([teamId, ratingDate])
+  @@map("elo_ratings")
+}
+
+model HeadToHead {
+  id         String   @id @default(cuid())
+  homeTeamId String   @map("home_team_id")
+  awayTeamId String   @map("away_team_id")
+  matchId    String   @map("match_id")
+  matchDate  DateTime @map("match_date")
+  homeScore  Int      @map("home_score")
+  awayScore  Int      @map("away_score")
+  /// "HOME" | "DRAW" | "AWAY"
+  result     String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  homeTeam Team  @relation("H2HHome", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeam Team  @relation("H2HAway", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  match    Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId])
+  @@index([homeTeamId, awayTeamId, matchDate])
+  @@map("head_to_head")
+}
+
+model Player {
+  id          String    @id @default(cuid())
+  externalId  String    @map("external_id")
+  source      String
+  teamId      String?   @map("team_id")
+  name        String
+  position    String?
+  nationality String?
+  birthDate   DateTime? @map("birth_date") @db.Date
+  active      Boolean   @default(true)
+  fetchedAt   DateTime  @default(now()) @map("fetched_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  team     Team?    @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  injuries Injury[]
+  lineups  Lineup[]
+
+  @@unique([source, externalId])
+  @@index([teamId])
+  @@map("players")
+}
+
+model Injury {
+  id              String       @id @default(cuid())
+  playerId        String       @map("player_id")
+  teamId          String       @map("team_id")
+  status          InjuryStatus
+  reason          String?
+  startDate       DateTime?    @map("start_date") @db.Date
+  expectedReturn  DateTime?    @map("expected_return") @db.Date
+  /// When the provider published this — the leakage guard for backtests.
+  sourceUpdatedAt DateTime     @map("source_updated_at")
+  source          String
+  fetchedAt       DateTime     @default(now()) @map("fetched_at")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([teamId, sourceUpdatedAt])
+  @@index([playerId, sourceUpdatedAt])
+  @@map("injuries")
+}
+
+model Lineup {
+  id          String     @id @default(cuid())
+  matchId     String     @map("match_id")
+  teamId      String     @map("team_id")
+  playerId    String     @map("player_id")
+  type        LineupType
+  starter     Boolean    @default(false)
+  position    String?
+  shirtNumber Int?       @map("shirt_number")
+  formation   String?
+  /// When this lineup became known. Backtests must not read rows published
+  /// after the prediction timestamp (§18, §57).
+  publishedAt DateTime   @map("published_at")
+  source      String
+  createdAt   DateTime   @default(now()) @map("created_at")
+
+  match  Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, playerId, type])
+  @@index([matchId, publishedAt])
+  @@map("lineups")
+}
+
+// ===========================================================================
+// BETTING VOCABULARY & PRICES
+// ===========================================================================
+
+model Bookmaker {
+  id          String   @id @default(cuid())
+  externalId  String?  @map("external_id")
+  source      String
+  name        String
+  country     String?
+  /// 0..1 weight used when consolidating prices; sharp books score higher.
+  reliability Decimal  @default(0.5) @db.Decimal(4, 3)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  odds Odds[]
+
+  @@unique([source, name])
+  @@map("bookmakers")
+}
+
+model BettingMarket {
+  id           String         @id @default(cuid())
+  code         String         @unique
+  name         String
+  category     MarketCategory
+  description  String?
+  /// Shape of `BettingSelection.parameters` this market expects.
+  paramsSchema Json?          @map("params_schema")
+  active       Boolean        @default(true)
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  selections  BettingSelection[]
+  odds        Odds[]
+  predictions Prediction[]
+
+  @@index([category, active])
+  @@map("betting_markets")
+}
+
+model BettingSelection {
+  id          String   @id @default(cuid())
+  marketId    String   @map("market_id")
+  code        String
+  name        String
+  description String?
+  /// e.g. { "line": 2.5, "side": "OVER" } or { "goals": 6 } — keeps new
+  /// markets additive instead of schema changes (§21).
+  parameters  Json?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  market      BettingMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  odds        Odds[]
+  predictions Prediction[]
+
+  @@unique([marketId, code])
+  @@index([code])
+  @@map("betting_selections")
+}
+
+/// Append-only price history. An "update" is always a new row (§22).
+model Odds {
+  id          String @id @default(cuid())
+  matchId     String @map("match_id")
+  bookmakerId String @map("bookmaker_id")
+  marketId    String @map("market_id")
+  selectionId String @map("selection_id")
+
+  price     Decimal @db.Decimal(12, 3)
+  /// 0 when the market has no line, so the unique index actually dedupes.
+  handicap  Decimal @default(0) @db.Decimal(6, 2)
+  isOpening Boolean @default(false) @map("is_opening")
+  isClosing Boolean @default(false) @map("is_closing")
+  available Boolean @default(true)
+
+  capturedAt DateTime @map("captured_at")
+  source     String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  match     Match            @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  bookmaker Bookmaker        @relation(fields: [bookmakerId], references: [id], onDelete: Restrict)
+  market    BettingMarket    @relation(fields: [marketId], references: [id], onDelete: Restrict)
+  selection BettingSelection @relation(fields: [selectionId], references: [id], onDelete: Restrict)
+
+  @@unique([matchId, bookmakerId, selectionId, handicap, capturedAt])
+  @@index([matchId, selectionId, capturedAt])
+  @@index([matchId, capturedAt])
+  @@index([selectionId, capturedAt])
+  @@map("odds")
+}
+
+// ===========================================================================
+// MODEL & PREDICTIONS
+// ===========================================================================
+
+model ModelVersion {
+  id            String   @id @default(cuid())
+  name          String
+  version       String
+  description   String?
+  /// Ensemble weights and every model hyper-parameter. Nothing is hard-coded
+  /// in the services (§26).
+  configuration Json
+  active        Boolean  @default(false)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  predictions Prediction[]
+  coupons     Coupon[]
+  backtests   Backtest[]
+  couponRuns  CouponGenerationRun[]
+
+  @@unique([name, version])
+  @@index([active])
+  @@map("model_versions")
+}
+
+/// A model's opinion on one selection of one match, frozen in time.
+/// Never updated except by settlement, which only appends the outcome (§41).
+model Prediction {
+  id             String @id @default(cuid())
+  matchId        String @map("match_id")
+  marketId       String @map("market_id")
+  selectionId    String @map("selection_id")
+  modelVersionId String @map("model_version_id")
+
+  probability        Decimal  @db.Decimal(9, 8)
+  /// Snapshot of the price used, so later odds movement cannot rewrite history.
+  oddsUsed           Decimal? @map("odds_used") @db.Decimal(12, 3)
+  oddsId             String?  @map("odds_id")
+  impliedProbability Decimal? @map("implied_probability") @db.Decimal(9, 8)
+  edge               Decimal? @db.Decimal(10, 6)
+  expectedValue      Decimal? @map("expected_value") @db.Decimal(10, 6)
+  confidenceScore    Decimal  @map("confidence_score") @db.Decimal(5, 4)
+  riskScore          Decimal  @map("risk_score") @db.Decimal(5, 4)
+  dataQualityScore   Decimal  @map("data_quality_score") @db.Decimal(5, 4)
+  recommended        Boolean  @default(false)
+
+  /// Per-model contributions + the features that produced them, for the
+  /// "why this pick" panel (§48). Explanations must be derived, never invented.
+  breakdown Json?
+
+  /// The moment the model was allowed to see data. Feature queries filter on
+  /// `<= predictionTimestamp` — this is the leakage boundary (§57).
+  predictionTimestamp DateTime @map("prediction_timestamp")
+
+  status             SettlementStatus @default(PENDING)
+  settledAt          DateTime?        @map("settled_at")
+  settlementVersion  Int?             @map("settlement_version")
+  /// The exact result used to settle, kept for audit.
+  settlementSnapshot Json?            @map("settlement_snapshot")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  match        Match            @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  market       BettingMarket    @relation(fields: [marketId], references: [id], onDelete: Restrict)
+  selection    BettingSelection @relation(fields: [selectionId], references: [id], onDelete: Restrict)
+  modelVersion ModelVersion     @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+
+  couponSelections CouponSelection[]
+
+  @@unique([matchId, selectionId, modelVersionId, predictionTimestamp])
+  @@index([matchId, modelVersionId])
+  @@index([modelVersionId, predictionTimestamp])
+  @@index([status, predictionTimestamp])
+  @@index([recommended, expectedValue])
+  @@map("predictions")
+}
+
+// ===========================================================================
+// SETTINGS — everything the operator can change without a redeploy (§17, §24)
+// ===========================================================================
+
+model AppSetting {
+  id          String           @id @default(cuid())
+  key         String           @unique
+  value       String
+  valueType   SettingValueType @map("value_type")
+  category    String
+  description String?
+  updatedBy   String?          @map("updated_by")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@index([category])
+  @@map("app_settings")
+}
+
+/// Strongly typed per-category coupon rules. Validated before save so an
+/// impossible configuration can never reach the generator (§17).
+model CouponCategorySetting {
+  id       String         @id @default(cuid())
+  category CouponCategory @unique
+
+  enabled     Boolean @default(true)
+  couponCount Int     @map("coupon_count")
+
+  minTotalOdds Decimal  @map("min_total_odds") @db.Decimal(12, 3)
+  maxTotalOdds Decimal? @map("max_total_odds") @db.Decimal(12, 3)
+
+  minSelections Int @map("min_selections")
+  maxSelections Int @map("max_selections")
+
+  minConfidence    Decimal @map("min_confidence") @db.Decimal(5, 4)
+  minExpectedValue Decimal @map("min_expected_value") @db.Decimal(10, 6)
+  minEdge          Decimal @map("min_edge") @db.Decimal(10, 6)
+  minProbability   Decimal @map("min_probability") @db.Decimal(9, 8)
+  maxRisk          Decimal @map("max_risk") @db.Decimal(5, 4)
+  maxCorrelation   Decimal @map("max_correlation") @db.Decimal(5, 4)
+  minDataQuality   Decimal @map("min_data_quality") @db.Decimal(5, 4)
+
+  oneSelectionPerMatch Boolean  @default(true) @map("one_selection_per_match")
+  /// Market codes eligible for this category; empty = all active markets.
+  allowedMarkets       String[] @map("allowed_markets")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("coupon_category_settings")
+}
+
+/// When the bulletin is published and how far forward each run prepares (§42).
+/// The system does not run daily; it runs on publication days.
+model BulletinScheduleSetting {
+  id      String  @id @default(cuid())
+  enabled Boolean @default(true)
+
+  /// The zone whose calendar decides what "Thursday" means.
+  timezone            String @default("Europe/Istanbul")
+  /// ISO weekdays: Monday = 1 ... Sunday = 7.
+  publicationWeekdays Int[]  @map("publication_weekdays")
+  /// 0 = include the publication day itself, 1 = start tomorrow.
+  coverageOffsetDays  Int    @default(1) @map("coverage_offset_days")
+  /// How many match days one publication prepares.
+  coverageDays        Int    @default(3) @map("coverage_days")
+  /// Local time of day the run fires, "HH:MM".
+  publishTimeLocal    String @default("09:00") @map("publish_time_local")
+
+  grouping CoverageGrouping @default(PER_DAY)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("bulletin_schedule_settings")
+}
+
+model SystemCouponSetting {
+  id      String  @id @default(cuid())
+  enabled Boolean @default(true)
+
+  /// e.g. ["SYSTEM_2","SYSTEM_3","SYSTEM_4"]
+  allowedSystemTypes String[] @map("allowed_system_types")
+  defaultSystemType  String   @map("default_system_type")
+
+  minBaseSelections Int @map("min_base_selections")
+  maxBaseSelections Int @map("max_base_selections")
+
+  stakePerColumn Decimal @map("stake_per_column") @db.Decimal(14, 2)
+  maxTotalStake  Decimal @map("max_total_stake") @db.Decimal(14, 2)
+  currency       String  @default("EUR")
+
+  minCombinedProbability Decimal @map("min_combined_probability") @db.Decimal(9, 8)
+  minExpectedValue       Decimal @map("min_expected_value") @db.Decimal(10, 6)
+  maxCorrelation         Decimal @map("max_correlation") @db.Decimal(5, 4)
+  oneSelectionPerMatch   Boolean @default(true) @map("one_selection_per_match")
+  couponCount            Int     @default(2) @map("coupon_count")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_coupon_settings")
+}
+
+/// Immutable copy of every setting that influenced one generation run. Coupons
+/// point at it, so changing settings later cannot rewrite history (§30, §41).
+model SettingsSnapshot {
+  id        String   @id @default(cuid())
+  checksum  String   @unique
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  coupons     Coupon[]
+  generations CouponGenerationRun[]
+
+  @@map("settings_snapshots")
+}
+
+model SettingsAuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?  @map("actor_id")
+  scope     String // "app_setting" | "coupon_category" | "system" | "plan"
+  key       String
+  oldValue  Json?    @map("old_value")
+  newValue  Json?    @map("new_value")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([scope, createdAt])
+  @@map("settings_audit_logs")
+}
+
+// ===========================================================================
+// COUPONS
+// ===========================================================================
+
+/// One daily execution of the generation pipeline (§42).
+model CouponGenerationRun {
+  id                String           @id @default(cuid())
+  /// The local calendar day the bulletin was published on.
+  publicationDate   DateTime         @map("publication_date") @db.Date
+  /// Inclusive local match-day window this run prepared coupons for.
+  coverageStartDate DateTime         @map("coverage_start_date") @db.Date
+  coverageEndDate   DateTime         @map("coverage_end_date") @db.Date
+  /// The schedule that produced the window, frozen for reproducibility.
+  scheduleTimezone  String           @map("schedule_timezone")
+  grouping          CoverageGrouping @default(PER_DAY)
+
+  modelVersionId     String @map("model_version_id")
+  settingsSnapshotId String @map("settings_snapshot_id")
+
+  status     JobStatus @default(PENDING)
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+
+  matchesConsidered   Int     @default(0) @map("matches_considered")
+  candidatesEvaluated Int     @default(0) @map("candidates_evaluated")
+  couponsGenerated    Int     @default(0) @map("coupons_generated")
+  /// Per-category "requested N, produced M because ..." (§30.7).
+  shortfallReasons    Json?   @map("shortfall_reasons")
+  error               String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  modelVersion     ModelVersion     @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+  settingsSnapshot SettingsSnapshot @relation(fields: [settingsSnapshotId], references: [id], onDelete: Restrict)
+  coupons          Coupon[]
+
+  @@unique([publicationDate, modelVersionId])
+  @@index([publicationDate])
+  @@index([coverageStartDate, coverageEndDate])
+  @@map("coupon_generation_runs")
+}
+
+model Coupon {
+  id              String         @id @default(cuid())
+  generationRunId String         @map("generation_run_id")
+  category        CouponCategory
+  kind            CouponKind     @default(STANDARD)
+  /// Stable per-day label like "HC-2026-09-04-01".
+  reference       String         @unique
+  name            String?
+  /// The local match day this coupon covers. Under WINDOW grouping this is the
+  /// first day of the window; under PER_DAY it is the single day.
+  targetDate      DateTime       @map("target_date") @db.Date
+  /// Kickoff bounds across the coupon's selections: drives "starts in ...",
+  /// settlement ordering and the earliest moment it can be graded.
+  firstKickoffUtc DateTime       @map("first_kickoff_utc")
+  lastKickoffUtc  DateTime       @map("last_kickoff_utc")
+
+  totalOdds            Decimal @map("total_odds") @db.Decimal(18, 4)
+  estimatedProbability Decimal @map("estimated_probability") @db.Decimal(9, 8)
+  expectedValue        Decimal @map("expected_value") @db.Decimal(10, 6)
+  confidenceScore      Decimal @map("confidence_score") @db.Decimal(5, 4)
+  riskScore            Decimal @map("risk_score") @db.Decimal(5, 4)
+  correlationScore     Decimal @map("correlation_score") @db.Decimal(5, 4)
+  diversificationScore Decimal @map("diversification_score") @db.Decimal(5, 4)
+  score                Decimal @db.Decimal(10, 6)
+  selectionCount       Int     @map("selection_count")
+
+  modelVersionId     String @map("model_version_id")
+  settingsSnapshotId String @map("settings_snapshot_id")
+
+  generationTimestamp DateTime @map("generation_timestamp")
+
+  resultStatus          CouponResultStatus @default(PENDING) @map("result_status")
+  settledAt             DateTime?          @map("settled_at")
+  settlementVersion     Int?               @map("settlement_version")
+  winningSelectionCount Int                @default(0) @map("winning_selection_count")
+  losingSelectionCount  Int                @default(0) @map("losing_selection_count")
+  voidSelectionCount    Int                @default(0) @map("void_selection_count")
+  /// Total odds after void selections are neutralised (§33).
+  effectiveOdds         Decimal?           @map("effective_odds") @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  generationRun    CouponGenerationRun @relation(fields: [generationRunId], references: [id], onDelete: Cascade)
+  modelVersion     ModelVersion        @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+  settingsSnapshot SettingsSnapshot    @relation(fields: [settingsSnapshotId], references: [id], onDelete: Restrict)
+
+  selections   CouponSelection[]
+  systemCoupon SystemCoupon?
+
+  @@index([targetDate, category])
+  @@index([category, resultStatus])
+  @@index([generationRunId])
+  @@index([lastKickoffUtc, resultStatus])
+  @@map("coupons")
+}
+
+model CouponSelection {
+  id           String @id @default(cuid())
+  couponId     String @map("coupon_id")
+  predictionId String @map("prediction_id")
+  matchId      String @map("match_id")
+
+  /// Denormalised for display and for immutability of the historical record.
+  marketCode         String  @map("market_code")
+  selectionCode      String  @map("selection_code")
+  odds               Decimal @db.Decimal(12, 3)
+  probability        Decimal @db.Decimal(9, 8)
+  impliedProbability Decimal @map("implied_probability") @db.Decimal(9, 8)
+  edge               Decimal @db.Decimal(10, 6)
+  expectedValue      Decimal @map("expected_value") @db.Decimal(10, 6)
+  sortOrder          Int     @map("sort_order")
+
+  resultStatus SettlementStatus @default(PENDING) @map("result_status")
+  settledAt    DateTime?        @map("settled_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  coupon     Coupon     @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  prediction Prediction @relation(fields: [predictionId], references: [id], onDelete: Restrict)
+  match      Match      @relation(fields: [matchId], references: [id], onDelete: Restrict)
+
+  systemColumnLinks SystemCouponColumnSelection[]
+
+  @@unique([couponId, predictionId])
+  @@index([couponId, sortOrder])
+  @@index([matchId])
+  @@map("coupon_selections")
+}
+
+// ===========================================================================
+// SYSTEM (COMBINATION) COUPONS — settled column by column (§18, §34)
+// ===========================================================================
+
+model SystemCoupon {
+  id       String @id @default(cuid())
+  couponId String @unique @map("coupon_id")
+
+  systemType           String @map("system_type") // SYSTEM_3
+  baseSelectionCount   Int    @map("base_selection_count") // n
+  systemSelectionCount Int    @map("system_selection_count") // k
+  columnCount          Int    @map("column_count") // C(n,k)
+
+  stakePerColumn Decimal @map("stake_per_column") @db.Decimal(14, 2)
+  totalStake     Decimal @map("total_stake") @db.Decimal(14, 2)
+  currency       String  @default("EUR")
+
+  resultStatus      CouponResultStatus @default(PENDING) @map("result_status")
+  winningColumns    Int                @default(0) @map("winning_columns")
+  losingColumns     Int                @default(0) @map("losing_columns")
+  voidColumns       Int                @default(0) @map("void_columns")
+  totalReturn       Decimal            @default(0) @map("total_return") @db.Decimal(16, 2)
+  netProfit         Decimal            @default(0) @map("net_profit") @db.Decimal(16, 2)
+  roi               Decimal            @default(0) @db.Decimal(10, 6)
+  settledAt         DateTime?          @map("settled_at")
+  settlementVersion Int?               @map("settlement_version")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  coupon  Coupon               @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  columns SystemCouponColumn[]
+
+  @@map("system_coupons")
+}
+
+model SystemCouponColumn {
+  id             String @id @default(cuid())
+  systemCouponId String @map("system_coupon_id")
+  columnIndex    Int    @map("column_index")
+
+  combinedOdds Decimal @map("combined_odds") @db.Decimal(18, 4)
+  stake        Decimal @db.Decimal(14, 2)
+
+  resultStatus CouponResultStatus @default(PENDING) @map("result_status")
+  returnAmount Decimal            @default(0) @map("return_amount") @db.Decimal(16, 2)
+  netProfit    Decimal            @default(0) @map("net_profit") @db.Decimal(16, 2)
+  settledAt    DateTime?          @map("settled_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  systemCoupon SystemCoupon                  @relation(fields: [systemCouponId], references: [id], onDelete: Cascade)
+  selections   SystemCouponColumnSelection[]
+
+  @@unique([systemCouponId, columnIndex])
+  @@index([systemCouponId, resultStatus])
+  @@map("system_coupon_columns")
+}
+
+model SystemCouponColumnSelection {
+  id                String @id @default(cuid())
+  columnId          String @map("column_id")
+  couponSelectionId String @map("coupon_selection_id")
+
+  column          SystemCouponColumn @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  couponSelection CouponSelection    @relation(fields: [couponSelectionId], references: [id], onDelete: Cascade)
+
+  @@unique([columnId, couponSelectionId])
+  @@index([couponSelectionId])
+  @@map("system_coupon_column_selections")
+}
+
+/// Rule-based correlation between two markets, replaceable later by a fitted
+/// statistical model (§33).
+model MarketCorrelation {
+  id             String   @id @default(cuid())
+  marketCodeA    String   @map("market_code_a")
+  /// "*" means the rule applies to every selection in that market. A nullable
+  /// column would defeat the unique index, because Postgres treats NULLs as
+  /// distinct and would happily store the same rule twice.
+  selectionCodeA String   @default("*") @map("selection_code_a")
+  marketCodeB    String   @map("market_code_b")
+  selectionCodeB String   @default("*") @map("selection_code_b")
+  /// -1..1
+  coefficient    Decimal  @db.Decimal(5, 4)
+  /// Only applies when both selections belong to the same match.
+  sameMatchOnly  Boolean  @default(true) @map("same_match_only")
+  note           String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([marketCodeA, selectionCodeA, marketCodeB, selectionCodeB])
+  @@map("market_correlations")
+}
+
+// ===========================================================================
+// BACKTESTING (§36, §37, §38)
+// ===========================================================================
+
+model Backtest {
+  id              String    @id @default(cuid())
+  name            String
+  modelVersionId  String    @map("model_version_id")
+  startDate       DateTime  @map("start_date") @db.Date
+  endDate         DateTime  @map("end_date") @db.Date
+  /// Chronological folds: [{ trainTo, testFrom, testTo }, ...]
+  walkForwardPlan Json      @map("walk_forward_plan")
+  configuration   Json
+  status          JobStatus @default(PENDING)
+
+  totalBets          Int      @default(0) @map("total_bets")
+  winningBets        Int      @default(0) @map("winning_bets")
+  losingBets         Int      @default(0) @map("losing_bets")
+  voidBets           Int      @default(0) @map("void_bets")
+  hitRate            Decimal? @map("hit_rate") @db.Decimal(6, 5)
+  averageOdds        Decimal? @map("average_odds") @db.Decimal(12, 4)
+  averageProbability Decimal? @map("average_probability") @db.Decimal(9, 8)
+  averageEdge        Decimal? @map("average_edge") @db.Decimal(10, 6)
+  totalStake         Decimal  @default(0) @map("total_stake") @db.Decimal(16, 2)
+  profit             Decimal  @default(0) @db.Decimal(16, 2)
+  roi                Decimal? @db.Decimal(10, 6)
+  maxDrawdown        Decimal? @map("max_drawdown") @db.Decimal(16, 2)
+  brierScore         Decimal? @map("brier_score") @db.Decimal(10, 8)
+  logLoss            Decimal? @map("log_loss") @db.Decimal(10, 8)
+  /// Reliability-curve buckets for calibration plots.
+  calibration        Json?
+
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  modelVersion ModelVersion         @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+  predictions  BacktestPrediction[]
+
+  @@index([modelVersionId, createdAt])
+  @@map("backtests")
+}
+
+model BacktestPrediction {
+  id            String @id @default(cuid())
+  backtestId    String @map("backtest_id")
+  matchId       String @map("match_id")
+  marketCode    String @map("market_code")
+  selectionCode String @map("selection_code")
+
+  /// The cut-off used; every feature was filtered to <= this instant.
+  knowledgeCutoff    DateTime         @map("knowledge_cutoff")
+  probability        Decimal          @db.Decimal(9, 8)
+  odds               Decimal          @db.Decimal(12, 3)
+  impliedProbability Decimal          @map("implied_probability") @db.Decimal(9, 8)
+  edge               Decimal          @db.Decimal(10, 6)
+  expectedValue      Decimal          @map("expected_value") @db.Decimal(10, 6)
+  stake              Decimal          @db.Decimal(14, 2)
+  status             SettlementStatus
+  payout             Decimal          @default(0) @db.Decimal(16, 2)
+  profit             Decimal          @default(0) @db.Decimal(16, 2)
+  fold               Int              @default(0)
+  createdAt          DateTime         @default(now()) @map("created_at")
+
+  backtest Backtest @relation(fields: [backtestId], references: [id], onDelete: Cascade)
+
+  @@index([backtestId, knowledgeCutoff])
+  @@index([backtestId, fold])
+  @@map("backtest_predictions")
+}
+
+// ===========================================================================
+// MEMBERSHIP & BILLING (§16)
+// ===========================================================================
+
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  emailVerifiedAt  DateTime? @map("email_verified_at")
+  name             String?
+  passwordHash     String?   @map("password_hash")
+  externalAuthId   String?   @unique @map("external_auth_id")
+  role             UserRole  @default(USER)
+  /// Preferred UI language; falls back to Accept-Language then EN.
+  locale           Locale    @default(EN)
+  stripeCustomerId String?   @unique @map("stripe_customer_id")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  sessions      Session[]
+  subscriptions Subscription[]
+  invoices      Invoice[]
+  auditLogs     SettingsAuditLog[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  userAgent String?  @map("user_agent")
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("sessions")
+}
+
+model SubscriptionPlan {
+  id              String   @id @default(cuid())
+  code            PlanCode @unique
+  name            String
+  description     String?
+  monthlyPrice    Decimal  @map("monthly_price") @db.Decimal(12, 2)
+  currency        String   @default("EUR")
+  stripeProductId String?  @map("stripe_product_id")
+  stripePriceId   String?  @unique @map("stripe_price_id")
+  sortOrder       Int      @default(0) @map("sort_order")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  features      SubscriptionPlanFeature[]
+  subscriptions Subscription[]
+
+  @@map("subscription_plans")
+}
+
+model SubscriptionPlanFeature {
+  id          String  @id @default(cuid())
+  planId      String  @map("plan_id")
+  featureCode String  @map("feature_code")
+  enabled     Boolean @default(true)
+  /// Optional numeric cap (e.g. max system coupons per day).
+  limitValue  Int?    @map("limit_value")
+
+  plan SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, featureCode])
+  @@map("subscription_plan_features")
+}
+
+model Subscription {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  planId String @map("plan_id")
+
+  provider               String  @default("stripe")
+  externalCustomerId     String? @map("external_customer_id")
+  externalSubscriptionId String? @unique @map("external_subscription_id")
+
+  status             SubscriptionStatus
+  currentPeriodStart DateTime?          @map("current_period_start")
+  currentPeriodEnd   DateTime?          @map("current_period_end")
+  cancelAtPeriodEnd  Boolean            @default(false) @map("cancel_at_period_end")
+  canceledAt         DateTime?          @map("canceled_at")
+  trialEnd           DateTime?          @map("trial_end")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([userId, status])
+  @@index([status, currentPeriodEnd])
+  @@map("subscriptions")
+}
+
+/// Webhook inbox. `externalEventId` unique = idempotency (§16).
+model SubscriptionEvent {
+  id              String    @id @default(cuid())
+  provider        String
+  externalEventId String    @map("external_event_id")
+  eventType       String    @map("event_type")
+  payloadJson     Json      @map("payload_json")
+  processedAt     DateTime? @map("processed_at")
+  error           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@unique([provider, externalEventId])
+  @@index([processedAt])
+  @@map("subscription_events")
+}
+
+model Invoice {
+  id                String    @id @default(cuid())
+  userId            String    @map("user_id")
+  provider          String    @default("stripe")
+  externalInvoiceId String    @unique @map("external_invoice_id")
+  amountDue         Decimal   @map("amount_due") @db.Decimal(12, 2)
+  amountPaid        Decimal   @map("amount_paid") @db.Decimal(12, 2)
+  currency          String
+  status            String
+  hostedInvoiceUrl  String?   @map("hosted_invoice_url")
+  pdfUrl            String?   @map("pdf_url")
+  periodStart       DateTime? @map("period_start")
+  periodEnd         DateTime? @map("period_end")
+  issuedAt          DateTime? @map("issued_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, issuedAt])
+  @@map("invoices")
+}
+
+// ===========================================================================
+// OPERATIONS
+// ===========================================================================
+
+model JobRun {
+  id             String    @id @default(cuid())
+  jobName        String    @map("job_name")
+  status         JobStatus @default(PENDING)
+  /// Idempotency key, e.g. "MatchResultSyncJob:2026-09-04T10:00Z".
+  runKey         String?   @unique @map("run_key")
+  startedAt      DateTime? @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+  itemsProcessed Int       @default(0) @map("items_processed")
+  itemsFailed    Int       @default(0) @map("items_failed")
+  error          String?
+  metadata       Json?
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([jobName, createdAt])
+  @@index([status])
+  @@map("job_runs")
+}
+
+/// Advisory lock rows so two workers never settle the same coupon (§38).
+model JobLock {
+  key        String   @id
+  ownerId    String   @map("owner_id")
+  acquiredAt DateTime @default(now()) @map("acquired_at")
+  expiresAt  DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("job_locks")
+}
+
+model ProviderRequestLog {
+  id             String   @id @default(cuid())
+  provider       String
+  endpoint       String
+  statusCode     Int?     @map("status_code")
+  durationMs     Int?     @map("duration_ms")
+  success        Boolean  @default(true)
+  attempt        Int      @default(1)
+  errorMessage   String?  @map("error_message")
+  /// Credits consumed. The Odds API charges markets x regions per call, so a
+  /// plain request count would understate usage by 3-5x.
+  cost           Int      @default(1)
+  /// Credits the provider reported as remaining, when it exposes a header.
+  quotaRemaining Int?     @map("quota_remaining")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([provider, createdAt])
+  @@index([success, createdAt])
+  @@map("provider_request_logs")
+}
+
+/// Denormalised daily reporting rows (§40). Rebuildable from source tables.
+model DailyStatistic {
+  id             String          @id @default(cuid())
+  targetDate     DateTime        @map("target_date") @db.Date
+  category       CouponCategory?
+  marketCode     String?         @map("market_code")
+  leagueId       String?         @map("league_id")
+  modelVersionId String?         @map("model_version_id")
+
+  couponsGenerated Int @default(0) @map("coupons_generated")
+  couponsSettled   Int @default(0) @map("coupons_settled")
+  couponsPending   Int @default(0) @map("coupons_pending")
+  couponsWon       Int @default(0) @map("coupons_won")
+  couponsLost      Int @default(0) @map("coupons_lost")
+  couponsVoid      Int @default(0) @map("coupons_void")
+
+  winRate              Decimal? @map("win_rate") @db.Decimal(6, 5)
+  averageOdds          Decimal? @map("average_odds") @db.Decimal(12, 4)
+  averageProbability   Decimal? @map("average_probability") @db.Decimal(9, 8)
+  averageEdge          Decimal? @map("average_edge") @db.Decimal(10, 6)
+  averageExpectedValue Decimal? @map("average_expected_value") @db.Decimal(10, 6)
+  totalStake           Decimal  @default(0) @map("total_stake") @db.Decimal(16, 2)
+  totalReturn          Decimal  @default(0) @map("total_return") @db.Decimal(16, 2)
+  netProfit            Decimal  @default(0) @map("net_profit") @db.Decimal(16, 2)
+  roi                  Decimal? @db.Decimal(10, 6)
+  systemWinningColumns Int      @default(0) @map("system_winning_columns")
+
+  computedAt DateTime @default(now()) @map("computed_at")
+
+  @@unique([targetDate, category, marketCode, leagueId, modelVersionId])
+  @@index([targetDate])
+  @@map("daily_statistics")
+}

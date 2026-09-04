@@ -1,0 +1,252 @@
+import { prisma } from '@/lib/db/prisma';
+import {
+  CATEGORY_FEATURE,
+  DEFAULT_FREE_PREVIEW,
+  canAccessCategory,
+  requiredPlanFor,
+  type FreePreviewPolicy,
+} from '@/lib/entitlements/features';
+import type { CouponCategory } from '@/lib/config/coupon-settings';
+import type { Viewer } from '@/lib/auth/session';
+import { getAppSetting } from '@/lib/config/settings-service';
+import { dec, toMoney, toOdds } from '@/lib/math/decimal';
+
+/**
+ * Entitlement-aware coupon loading (§23, §25).
+ *
+ * The lock is enforced in the query. A viewer without the entitlement never
+ * receives the selections, so the blurred panel in the UI is a placeholder over
+ * data that was never sent — not a CSS filter over real content.
+ *
+ * Three states:
+ *   full    — admin, or a plan that covers the category
+ *   preview — no membership: a couple of real coupons from the entry category
+ *   locked  — aggregate only: how many, the odds band, the best possible return
+ */
+
+export type AccessLevel = 'full' | 'preview' | 'locked';
+
+export interface HiddenSummary {
+  count: number;
+  selectionCount: number;
+  minTotalOdds: number | null;
+  maxTotalOdds: number | null;
+  maxPotentialReturn: number;
+  referenceStake: number;
+  requiredPlan: string | null;
+}
+
+export interface UnlockedCoupon {
+  id: string;
+  reference: string;
+  category: CouponCategory;
+  totalOdds: number;
+  estimatedProbability: number;
+  expectedValue: number;
+  confidenceScore: number;
+  riskScore: number;
+  resultStatus: string;
+  targetDate: Date;
+  firstKickoffUtc: Date;
+  lastKickoffUtc: Date;
+  selections: Array<{
+    id: string;
+    marketCode: string;
+    selectionCode: string;
+    odds: number;
+    probability: number;
+    impliedProbability: number;
+    edge: number;
+    resultStatus: string;
+    match: {
+      id: string;
+      kickoffUtc: Date;
+      homeTeam: string;
+      awayTeam: string;
+      league: string;
+      status: string;
+      homeScore: number | null;
+      awayScore: number | null;
+    };
+  }>;
+}
+
+export interface CategoryView {
+  category: CouponCategory;
+  access: AccessLevel;
+  /** Coupons the viewer is actually allowed to see. */
+  coupons: UnlockedCoupon[];
+  /** Aggregate for what is withheld; null when nothing is. */
+  hidden: HiddenSummary | null;
+}
+
+/** Stake used to express "max winnings" in the locked view. */
+export const REFERENCE_STAKE = 100;
+
+export async function getFreePreviewPolicy(): Promise<FreePreviewPolicy> {
+  const [category, count] = await Promise.all([
+    getAppSetting<string>('access.freePreviewCategory', DEFAULT_FREE_PREVIEW.category),
+    getAppSetting<number>('access.freePreviewCount', DEFAULT_FREE_PREVIEW.count),
+  ]);
+
+  return {
+    category: (category as CouponCategory) ?? DEFAULT_FREE_PREVIEW.category,
+    count: Number.isInteger(count) && count >= 0 ? count : DEFAULT_FREE_PREVIEW.count,
+  };
+}
+
+const COUPON_SELECT = {
+  id: true,
+  reference: true,
+  category: true,
+  totalOdds: true,
+  estimatedProbability: true,
+  expectedValue: true,
+  confidenceScore: true,
+  riskScore: true,
+  resultStatus: true,
+  targetDate: true,
+  firstKickoffUtc: true,
+  lastKickoffUtc: true,
+  selections: {
+    orderBy: { sortOrder: 'asc' },
+    select: {
+      id: true,
+      marketCode: true,
+      selectionCode: true,
+      odds: true,
+      probability: true,
+      impliedProbability: true,
+      edge: true,
+      resultStatus: true,
+      match: {
+        select: {
+          id: true,
+          scheduledKickoffUtc: true,
+          status: true,
+          homeScore: true,
+          awayScore: true,
+          homeTeam: { select: { name: true } },
+          awayTeam: { select: { name: true } },
+          league: { select: { name: true } },
+        },
+      },
+    },
+  },
+} as const;
+
+type CouponRow = Awaited<ReturnType<typeof fetchCoupons>>[number];
+
+async function fetchCoupons(
+  category: CouponCategory,
+  range: { from: Date; to: Date },
+  take?: number,
+) {
+  return prisma.coupon.findMany({
+    where: { category, targetDate: { gte: range.from, lte: range.to } },
+    orderBy: [{ targetDate: 'asc' }, { score: 'desc' }],
+    select: COUPON_SELECT,
+    ...(take === undefined ? {} : { take }),
+  });
+}
+
+function toUnlocked(coupon: CouponRow): UnlockedCoupon {
+  return {
+    id: coupon.id,
+    reference: coupon.reference,
+    category: coupon.category as CouponCategory,
+    totalOdds: Number(coupon.totalOdds),
+    estimatedProbability: Number(coupon.estimatedProbability),
+    expectedValue: Number(coupon.expectedValue),
+    confidenceScore: Number(coupon.confidenceScore),
+    riskScore: Number(coupon.riskScore),
+    resultStatus: coupon.resultStatus,
+    targetDate: coupon.targetDate,
+    firstKickoffUtc: coupon.firstKickoffUtc,
+    lastKickoffUtc: coupon.lastKickoffUtc,
+    selections: coupon.selections.map((selection) => ({
+      id: selection.id,
+      marketCode: selection.marketCode,
+      selectionCode: selection.selectionCode,
+      odds: Number(selection.odds),
+      probability: Number(selection.probability),
+      impliedProbability: Number(selection.impliedProbability),
+      edge: Number(selection.edge),
+      resultStatus: selection.resultStatus,
+      match: {
+        id: selection.match.id,
+        kickoffUtc: selection.match.scheduledKickoffUtc,
+        homeTeam: selection.match.homeTeam.name,
+        awayTeam: selection.match.awayTeam.name,
+        league: selection.match.league.name,
+        status: selection.match.status,
+        homeScore: selection.match.homeScore,
+        awayScore: selection.match.awayScore,
+      },
+    })),
+  };
+}
+
+/** Aggregate for withheld coupons. Selects no selection data at all. */
+async function summariseHidden(
+  category: CouponCategory,
+  range: { from: Date; to: Date },
+  skip: number,
+): Promise<HiddenSummary> {
+  const rows = await prisma.coupon.findMany({
+    where: { category, targetDate: { gte: range.from, lte: range.to } },
+    orderBy: [{ targetDate: 'asc' }, { score: 'desc' }],
+    select: { totalOdds: true, selectionCount: true },
+    skip,
+  });
+
+  const odds = rows.map((r) => dec(r.totalOdds));
+  const best = odds.reduce((max, o) => (o.greaterThan(max) ? o : max), dec(0));
+  const worst = odds.length > 0 ? odds.reduce((min, o) => (o.lessThan(min) ? o : min), odds[0]!) : null;
+
+  return {
+    count: rows.length,
+    selectionCount: rows.reduce((sum, r) => sum + r.selectionCount, 0),
+    minTotalOdds: worst ? Number(toOdds(worst).toFixed(2)) : null,
+    maxTotalOdds: odds.length > 0 ? Number(toOdds(best).toFixed(2)) : null,
+    maxPotentialReturn: Number(toMoney(best.times(REFERENCE_STAKE)).toFixed(2)),
+    referenceStake: REFERENCE_STAKE,
+    requiredPlan: requiredPlanFor(CATEGORY_FEATURE[category]),
+  };
+}
+
+export async function getCategoryView(
+  viewer: Viewer,
+  category: CouponCategory,
+  range: { from: Date; to: Date },
+  preview?: FreePreviewPolicy,
+): Promise<CategoryView> {
+  // Admins operate the product and see every category unlocked.
+  const entitled = viewer.isAdmin || canAccessCategory(viewer.entitlements, category);
+
+  if (entitled) {
+    const coupons = await fetchCoupons(category, range);
+    return { category, access: 'full', coupons: coupons.map(toUnlocked), hidden: null };
+  }
+
+  const policy = preview ?? (await getFreePreviewPolicy());
+  const previewCount = policy.category === category ? policy.count : 0;
+
+  if (previewCount > 0) {
+    const visible = await fetchCoupons(category, range, previewCount);
+    const hidden = await summariseHidden(category, range, visible.length);
+    return {
+      category,
+      access: 'preview',
+      coupons: visible.map(toUnlocked),
+      hidden: hidden.count > 0 ? hidden : null,
+    };
+  }
+
+  return {
+    category,
+    access: 'locked',
+    coupons: [],
+    hidden: await summariseHidden(category, range, 0),
+  };
+}

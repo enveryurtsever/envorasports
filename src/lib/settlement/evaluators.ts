@@ -1,0 +1,246 @@
+import { MARKET } from '@/lib/markets/registry';
+import {
+  fullTimeOutcome,
+  halfTimeOutcome,
+  lifecycleOutcome,
+  readNumber,
+  readString,
+  totalGoals,
+  type MarketSettlementEvaluator,
+  type MatchResultInput,
+  type SelectionContext,
+  type SettlementOutcome,
+} from './types';
+
+const won = (value: boolean): SettlementOutcome => (value ? 'WON' : 'LOST');
+
+/** A market whose inputs have not arrived yet stays PENDING, never LOST. */
+const pendingIfMissing = <T>(value: T | null, resolve: (v: T) => SettlementOutcome): SettlementOutcome =>
+  value === null ? 'PENDING' : resolve(value);
+
+const matchResult: MarketSettlementEvaluator = {
+  marketCode: MARKET.MATCH_RESULT,
+  evaluate(selection, result) {
+    const expected = readString(selection.parameters, 'outcome');
+    return pendingIfMissing(fullTimeOutcome(result), (actual) => won(actual === expected));
+  },
+};
+
+const doubleChance: MarketSettlementEvaluator = {
+  marketCode: MARKET.DOUBLE_CHANCE,
+  evaluate(selection, result) {
+    const raw = selection.parameters?.outcomes;
+    const expected = Array.isArray(raw) ? raw.filter((o): o is string => typeof o === 'string') : [];
+    return pendingIfMissing(fullTimeOutcome(result), (actual) => won(expected.includes(actual)));
+  },
+};
+
+const overUnder: MarketSettlementEvaluator = {
+  marketCode: MARKET.OVER_UNDER,
+  evaluate(selection, result) {
+    const line = readNumber(selection.parameters, 'line');
+    const side = readString(selection.parameters, 'side');
+    if (line === null || (side !== 'OVER' && side !== 'UNDER')) return 'PENDING';
+
+    const subject = readString(selection.parameters, 'subject') ?? 'total';
+    const actual =
+      subject === 'corners'
+        ? result.totalCorners
+        : subject === 'cards'
+          ? result.totalCards
+          : totalGoals(result);
+
+    return pendingIfMissing(actual, (value) => {
+      // Whole-number lines can land exactly on the line: that is a push.
+      if (value === line) return 'PUSHED';
+      return won(side === 'OVER' ? value > line : value < line);
+    });
+  },
+};
+
+const btts: MarketSettlementEvaluator = {
+  marketCode: MARKET.BTTS,
+  evaluate(selection, result) {
+    if (result.homeScore === null || result.awayScore === null) return 'PENDING';
+    const bothScored = result.homeScore > 0 && result.awayScore > 0;
+    const expected = selection.parameters?.value === true;
+    return won(bothScored === expected);
+  },
+};
+
+const halfTimeResult: MarketSettlementEvaluator = {
+  marketCode: MARKET.HALF_TIME_RESULT,
+  evaluate(selection, result) {
+    const expected = readString(selection.parameters, 'outcome');
+    // Deliberately the half-time score, never the full-time score (§32).
+    return pendingIfMissing(halfTimeOutcome(result), (actual) => won(actual === expected));
+  },
+};
+
+const OUTCOME_TO_CODE: Record<string, '1' | 'X' | '2'> = { HOME: '1', DRAW: 'X', AWAY: '2' };
+
+const halfTimeFullTime: MarketSettlementEvaluator = {
+  marketCode: MARKET.HALF_TIME_FULL_TIME,
+  evaluate(selection, result) {
+    const half = halfTimeOutcome(result);
+    const full = fullTimeOutcome(result);
+    if (half === null || full === null) return 'PENDING';
+
+    const expectedHalf = readString(selection.parameters, 'half');
+    const expectedFull = readString(selection.parameters, 'full');
+    return won(OUTCOME_TO_CODE[half] === expectedHalf && OUTCOME_TO_CODE[full] === expectedFull);
+  },
+};
+
+const goalRange: MarketSettlementEvaluator = {
+  marketCode: MARKET.GOAL_RANGE,
+  evaluate(selection, result) {
+    const min = readNumber(selection.parameters, 'min');
+    if (min === null) return 'PENDING';
+    const max = readNumber(selection.parameters, 'max'); // null = open-ended
+    return pendingIfMissing(totalGoals(result), (goals) =>
+      won(goals >= min && (max === null || goals <= max)),
+    );
+  },
+};
+
+const totalGoalsThreshold: MarketSettlementEvaluator = {
+  marketCode: MARKET.TOTAL_GOALS_THRESHOLD,
+  evaluate(selection, result) {
+    const threshold = readNumber(selection.parameters, 'goals');
+    if (threshold === null) return 'PENDING';
+    return pendingIfMissing(totalGoals(result), (goals) => won(goals >= threshold));
+  },
+};
+
+const correctScore: MarketSettlementEvaluator = {
+  marketCode: MARKET.CORRECT_SCORE,
+  evaluate(selection, result) {
+    const home = readNumber(selection.parameters, 'home');
+    const away = readNumber(selection.parameters, 'away');
+    if (home === null || away === null) return 'PENDING';
+    if (result.homeScore === null || result.awayScore === null) return 'PENDING';
+    return won(result.homeScore === home && result.awayScore === away);
+  },
+};
+
+/**
+ * Asian handicap, including quarter lines.
+ *
+ * A -0.75 bet is half on -0.5 and half on -1.0, so a one-goal win is a
+ * half-win, not a win. Collapsing these to WON/LOST misprices real money.
+ */
+const asianHandicap: MarketSettlementEvaluator = {
+  marketCode: MARKET.ASIAN_HANDICAP,
+  evaluate(selection, result) {
+    const side = readString(selection.parameters, 'side');
+    const line = readNumber(selection.parameters, 'handicap') ?? selection.handicap;
+    if ((side !== 'HOME' && side !== 'AWAY') || !Number.isFinite(line)) return 'PENDING';
+    if (result.homeScore === null || result.awayScore === null) return 'PENDING';
+
+    const rawMargin = result.homeScore - result.awayScore;
+    const margin = side === 'HOME' ? rawMargin : -rawMargin;
+
+    // Quarter line: split the stake across the two neighbouring half-lines.
+    const isQuarter = Math.abs(line * 4) % 2 === 1;
+    if (isQuarter) {
+      const lower = line - 0.25;
+      const upper = line + 0.25;
+      const a = settleWholeOrHalfLine(margin, lower);
+      const b = settleWholeOrHalfLine(margin, upper);
+
+      if (a === 'WON' && b === 'WON') return 'WON';
+      if (a === 'LOST' && b === 'LOST') return 'LOST';
+      if (a === 'WON' && b === 'PUSHED') return 'HALF_WON';
+      if (a === 'PUSHED' && b === 'WON') return 'HALF_WON';
+      if (a === 'LOST' && b === 'PUSHED') return 'HALF_LOST';
+      if (a === 'PUSHED' && b === 'LOST') return 'HALF_LOST';
+      return 'PUSHED';
+    }
+
+    return settleWholeOrHalfLine(margin, line);
+  },
+};
+
+function settleWholeOrHalfLine(margin: number, line: number): SettlementOutcome {
+  const adjusted = margin + line;
+  if (adjusted > 0) return 'WON';
+  if (adjusted < 0) return 'LOST';
+  return 'PUSHED';
+}
+
+const teamTotal: MarketSettlementEvaluator = {
+  marketCode: MARKET.TEAM_TOTAL,
+  evaluate(selection, result) {
+    const side = readString(selection.parameters, 'side');
+    const direction = readString(selection.parameters, 'direction');
+    const line = readNumber(selection.parameters, 'line');
+    if ((side !== 'HOME' && side !== 'AWAY') || line === null) return 'PENDING';
+    if (direction !== 'OVER' && direction !== 'UNDER') return 'PENDING';
+
+    const goals = side === 'HOME' ? result.homeScore : result.awayScore;
+    return pendingIfMissing(goals, (value) => {
+      if (value === line) return 'PUSHED';
+      return won(direction === 'OVER' ? value > line : value < line);
+    });
+  },
+};
+
+/** Corners and cards reuse the over/under logic but on their own statistic. */
+const corners: MarketSettlementEvaluator = { marketCode: MARKET.CORNERS, evaluate: overUnder.evaluate };
+const cards: MarketSettlementEvaluator = { marketCode: MARKET.CARDS, evaluate: overUnder.evaluate };
+
+export const EVALUATORS: MarketSettlementEvaluator[] = [
+  matchResult,
+  doubleChance,
+  overUnder,
+  btts,
+  halfTimeResult,
+  halfTimeFullTime,
+  goalRange,
+  totalGoalsThreshold,
+  correctScore,
+  asianHandicap,
+  teamTotal,
+  corners,
+  cards,
+];
+
+const REGISTRY = new Map(EVALUATORS.map((e) => [e.marketCode, e]));
+
+export function getEvaluator(marketCode: string): MarketSettlementEvaluator | undefined {
+  return REGISTRY.get(marketCode);
+}
+
+/**
+ * Settles one selection. The lifecycle gate runs first, so an abandoned match
+ * can never be graded against a partial score.
+ */
+export function settleSelection(
+  selection: SelectionContext,
+  result: MatchResultInput,
+): SettlementOutcome {
+  const lifecycle = lifecycleOutcome(result);
+  if (lifecycle !== null) return lifecycle;
+
+  const evaluator = getEvaluator(selection.marketCode);
+  if (!evaluator) {
+    // An unknown market is never guessed at; it waits for an evaluator.
+    return 'PENDING';
+  }
+
+  const corners = selection.marketCode === MARKET.CORNERS;
+  const cardsMarket = selection.marketCode === MARKET.CARDS;
+  const parameters = corners
+    ? { ...(selection.parameters ?? {}), subject: 'corners' }
+    : cardsMarket
+      ? { ...(selection.parameters ?? {}), subject: 'cards' }
+      : selection.parameters;
+
+  return evaluator.evaluate({ ...selection, parameters }, result);
+}
+
+/** Market codes that currently have a settlement implementation. */
+export function settleableMarkets(): string[] {
+  return [...REGISTRY.keys()];
+}
