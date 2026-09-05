@@ -6,7 +6,7 @@ import {
   requiredPlanFor,
   type FreePreviewPolicy,
 } from '@/lib/entitlements/features';
-import type { CouponCategory } from '@/lib/config/coupon-settings';
+import { COUPON_CATEGORIES, type CouponCategory } from '@/lib/config/coupon-settings';
 import type { Viewer } from '@/lib/auth/session';
 import { getAppSetting } from '@/lib/config/settings-service';
 import { dec, toMoney, toOdds } from '@/lib/math/decimal';
@@ -274,6 +274,36 @@ async function summariseHidden(
     referenceStake: REFERENCE_STAKE,
     requiredPlan: requiredPlanFor(CATEGORY_FEATURE[category]),
   };
+}
+
+/**
+ * The free preview, moved to a category that actually has coupons.
+ *
+ * The policy names one category. When that category produces nothing — a
+ * thresholds change, a thin bulletin — the preview lands nowhere and a
+ * signed-out reader sees a page of locked cards and no coupons at all. The
+ * promise is "the first category's coupons are open", so it follows the first
+ * category that has any.
+ */
+export async function resolveFreePreviewPolicy(
+  range: { from: Date; to: Date },
+  policy: FreePreviewPolicy,
+): Promise<FreePreviewPolicy> {
+  if (policy.count <= 0) return policy;
+
+  const configured = await prisma.coupon.count({
+    where: { category: policy.category as CouponCategory, targetDate: { gte: range.from, lte: range.to } },
+  });
+  if (configured > 0) return policy;
+
+  for (const category of COUPON_CATEGORIES) {
+    const count = await prisma.coupon.count({
+      where: { category, targetDate: { gte: range.from, lte: range.to } },
+    });
+    if (count > 0) return { ...policy, category };
+  }
+
+  return policy;
 }
 
 export async function getCategoryView(

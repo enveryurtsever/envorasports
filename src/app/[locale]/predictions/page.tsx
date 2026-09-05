@@ -4,7 +4,11 @@ import { getBulletinSchedule } from '@/lib/config/settings-service';
 import { bulletinWeek, todayInSchedule } from '@/lib/schedule/bulletin-schedule';
 import { dateKeyToUtcMidnight } from '@/lib/time/zoned';
 import { COUPON_CATEGORIES } from '@/lib/config/coupon-settings';
-import { getCategoryView, getFreePreviewPolicy } from '@/services/coupons/coupon-access';
+import {
+  getCategoryView,
+  getFreePreviewPolicy,
+  resolveFreePreviewPolicy,
+} from '@/services/coupons/coupon-access';
 import { EmptyState, SectionHeading } from '@/components/ui/card';
 import { LockedPanel } from '@/components/ui/locked-panel';
 import { CouponCard } from '@/components/predictions/coupon-card';
@@ -30,7 +34,10 @@ export default async function PredictionsPage({
     to: dateKeyToUtcMidnight(week.endDate),
   };
 
-  const policy = await getFreePreviewPolicy();
+  // The preview follows the first category that actually has coupons, so a
+  // category that produced none does not leave a signed-out reader with a page
+  // of locked cards.
+  const policy = await resolveFreePreviewPolicy(range, await getFreePreviewPolicy());
   // Systems are shown alongside the straight coupons rather than on their own
   // page: they are part of the same week's slate, not a separate product.
   const views = await Promise.all(
