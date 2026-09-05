@@ -193,6 +193,31 @@ export interface CouponFocusGroup {
 
 export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
   {
+    /**
+     * Ten legs, every one of them a side expected to win.
+     *
+     * Not a long-shot slate: the length does the work, not the prices. Ten
+     * selections around 1.7 multiply past 300 on their own, so the legs can
+     * stay on the safe end of the bulletin — which is the point of asking for
+     * ten rather than three.
+     */
+    key: 'tenfold',
+    category: 'HIGH_VALUE',
+    // Ten distinct fixtures per coupon, and only so many are priced.
+    couponCount: 1,
+    allowedMarkets: [MARKET.MATCH_RESULT, MARKET.DOUBLE_CHANCE, MARKET.ASIAN_HANDICAP],
+    minTotalOdds: 300,
+    minSelections: 10,
+    maxSelections: 11,
+    // Each leg is a side the model likes; the combination is what makes it long.
+    minProbability: 0.45,
+    minConfidence: 0.4,
+    minEdge: 0,
+    minExpectedValue: 0,
+    maxRisk: 0.7,
+    minCombinedProbability: 0,
+  },
+  {
     key: 'htft',
     category: 'HIGH_VALUE',
     couponCount: 3,
@@ -237,7 +262,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     category: 'HIGH_CONFIDENCE',
     enabled: true,
     couponCount: 3,
-    minTotalOdds: 1.10,
+    minTotalOdds: 2,
     maxTotalOdds: 4,
     minSelections: 2,
     maxSelections: 3,
@@ -258,7 +283,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
      * once the bulletin carries short-priced favourites (Over 0.5, double
      * chance on a heavy favourite); until then it would empty the category.
      */
-    minCombinedProbability: 0.55,
+    minCombinedProbability: 0.4,
     oneSelectionPerMatch: true,
     /**
      * The safe end of the bulletin. Asian handicap earns its place here now

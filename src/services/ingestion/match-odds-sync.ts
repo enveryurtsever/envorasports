@@ -45,7 +45,7 @@ export async function syncMatchOddsForWindow(
       league: { active: true },
     },
     orderBy: { scheduledKickoffUtc: 'asc' },
-    select: { id: true, externalId: true },
+    select: { id: true, externalId: true, scheduledKickoffUtc: true },
   });
 
   const result: MatchOddsSyncResult = {
@@ -62,12 +62,44 @@ export async function syncMatchOddsForWindow(
     return result;
   }
 
-  const requested = candidates.slice(0, maxFixtures);
+  const provider = getMatchOddsProvider();
+
+  // Bulk pages a whole date, so the request cap no longer limits how many
+  // fixtures can be priced — every candidate in the window is fair game.
+  const bulkAvailable = provider.getBulletinByDate !== undefined && candidates.length >= 12;
+  const requested = bulkAvailable ? candidates : candidates.slice(0, maxFixtures);
   result.fixturesRequested = requested.length;
 
   const byExternalId = new Map(requested.map((match) => [match.externalId, match.id]));
 
-  const bulletin = await getMatchOddsProvider().getBulletin([...byExternalId.keys()]);
+  /**
+   * Ask by date when most of a bulletin is wanted.
+   *
+   * A date pages ten fixtures to a request; asking fixture by fixture is ten
+   * times the price. On a Sunday with hundreds of fixtures that difference is
+   * the whole candidate pool — eleven usable matches against a full slate.
+   * Below the threshold the per-fixture path is still cheaper, because it asks
+   * only for what it needs.
+   */
+  const dates = [...new Set(requested.map((m) => m.scheduledKickoffUtc.toISOString().slice(0, 10)))];
+  const useDateBulk = bulkAvailable;
+
+  let bulletin;
+  if (useDateBulk) {
+    const perDate = Math.max(1, Math.floor(maxFixtures / dates.length));
+    const events = [];
+    let quotaRemaining: number | null = null;
+
+    for (const date of dates) {
+      const page = await provider.getBulletinByDate!(date, perDate);
+      events.push(...page.events);
+      quotaRemaining = page.quotaRemaining;
+    }
+    bulletin = { capturedAt: new Date(), events, quotaRemaining };
+  } else {
+    bulletin = await provider.getBulletin([...byExternalId.keys()]);
+  }
+
   result.quotaRemaining = bulletin.quotaRemaining;
 
   const [marketIds, selectionIds] = await Promise.all([loadMarketIds(), loadSelectionIds()]);

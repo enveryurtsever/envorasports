@@ -17,11 +17,15 @@ export const LOCALE_CURRENCY: Record<AppLocale, string> = {
 };
 
 /**
- * Default reference stake. The live value comes from the `display.referenceStake`
- * setting so an operator can change what "max return" is quoted against without
- * a deploy.
+ * Default reference stake, and the smallest coupon that can actually be played:
+ * 50 TL is the floor on a Turkish slip. Quoting a return against a stake nobody
+ * can place makes the figure a hypothetical. The live value comes from the
+ * `display.referenceStake` setting so it can change without a deploy.
  */
-export const DEFAULT_REFERENCE_STAKE = 100;
+export const DEFAULT_REFERENCE_STAKE = 50;
+
+/** No slip may cost less than this, systems included. */
+export const MIN_COUPON_STAKE = 50;
 
 export function currencyFor(locale: string): string {
   return LOCALE_CURRENCY[locale as AppLocale] ?? 'EUR';

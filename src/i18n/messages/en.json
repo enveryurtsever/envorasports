@@ -419,8 +419,8 @@
     "home": "Home",
     "away": "Away",
     "draw": "Draw",
-    "AH_HOME": "AH 1 ({sign}{handicap, number})",
-    "AH_AWAY": "AH 2 ({sign}{handicap, number})"
+    "AH_HOME": "{team} {sign}{handicap, number}",
+    "AH_AWAY": "{team} {sign}{handicap, number}"
   },
   "disclaimer": {
     "short": "Predictions are statistical estimates, not guarantees of outcomes.",
@@ -533,6 +533,7 @@
   "focus": {
     "focus_htft": "HT/FT",
     "focus_goals6": "6+ Goals",
-    "focus_other": "Mixed"
+    "focus_other": "Mixed",
+    "focus_tenfold": "10-Fold"
   }
 }

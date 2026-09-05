@@ -186,7 +186,12 @@ describe('buildCoupon', () => {
   });
 
   it('never exceeds the maximum selection count', () => {
-    const many = Array.from({ length: 20 }, (_, i) => candidate({ id: `m${i}`, odds: dec('1.05') }));
+    // Spread across markets: no market may fill more than its share of a
+    // coupon, so twenty legs of one market cannot build a three-leg coupon.
+    const markets = ['MATCH_RESULT', 'OVER_UNDER', 'DOUBLE_CHANCE', 'BTTS'];
+    const many = Array.from({ length: 20 }, (_, i) =>
+      candidate({ id: `m${i}`, odds: dec('1.05'), marketCode: markets[i % markets.length] }),
+    );
     const coupon = buildCoupon(
       many,
       { ...balanced, minTotalOdds: 1.01, maxSelections: 3 },
@@ -331,6 +336,31 @@ describe('minCombinedProbability', () => {
         new Set(),
         DEFAULT_SCORING_WEIGHTS,
       ),
+    ).not.toBeNull();
+  });
+});
+
+describe('market mix', () => {
+  const strategy = { name: 'highest_ev', rank: (c: Candidate) => Number(c.expectedValue) } as const;
+
+  it('will not build a short coupon out of one market', () => {
+    // Two legs of Asian handicap is one idea twice. A short coupon has to mix.
+    const oneMarket = [
+      candidate({ id: 'a', marketCode: 'ASIAN_HANDICAP' }),
+      candidate({ id: 'b', matchId: 'm2', marketCode: 'ASIAN_HANDICAP' }),
+    ];
+    const settings = { ...balanced, maxSelections: 2, minTotalOdds: 1.1 };
+
+    expect(
+      buildCoupon(oneMarket, settings, baselineMatrix, strategy, new Set(), new Set(), DEFAULT_SCORING_WEIGHTS),
+    ).toBeNull();
+
+    const mixed = [
+      candidate({ id: 'a', marketCode: 'ASIAN_HANDICAP' }),
+      candidate({ id: 'b', matchId: 'm2', marketCode: 'OVER_UNDER' }),
+    ];
+    expect(
+      buildCoupon(mixed, settings, baselineMatrix, strategy, new Set(), new Set(), DEFAULT_SCORING_WEIGHTS),
     ).not.toBeNull();
   });
 });

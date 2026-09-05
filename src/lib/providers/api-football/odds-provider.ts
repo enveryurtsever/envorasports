@@ -29,10 +29,11 @@ const log = createLogger('provider:api-football:odds');
  * `matches.external_id`. No name-and-kickoff reconciliation is needed, which is
  * the fragile part of the other adapter.
  *
- * Cost: one request per fixture. Fetching a whole day in bulk is offered by the
- * provider but paginates ten fixtures at a time — 67 pages for a Saturday —
- * against a 100/day allowance, so per-fixture for the bulletin window is both
- * cheaper and more predictable.
+ * Cost: a day's odds paginate ten fixtures to a request, so a Sunday's 550
+ * fixtures cost 55 requests rather than 550. Per-fixture is only cheaper when
+ * a handful are wanted; for a whole bulletin it is ten times the price, which
+ * is what kept the coupon pool at eleven usable matches on a day with hundreds.
+ * Both shapes are offered and the caller picks by how many it needs.
  */
 
 interface RawValue {
@@ -323,8 +324,56 @@ export function createApiFootballOddsProvider(config: {
     return entry ? mapEntry(entry, capturedAt) : null;
   }
 
+  /**
+   * Every priced fixture on one date, paged.
+   *
+   * `maxRequests` bounds the spend: the provider reports the page count on the
+   * first response, so the caller learns the real cost after one request and
+   * the rest stop at the budget rather than draining the day.
+   */
+  async function fetchDate(
+    date: string,
+    capturedAt: Date,
+    maxRequests: number,
+  ): Promise<{ events: ProviderOddsEvent[]; requestsUsed: number }> {
+    const events: ProviderOddsEvent[] = [];
+    let requestsUsed = 0;
+    let page = 1;
+    let totalPages = 1;
+
+    while (page <= totalPages && requestsUsed < maxRequests) {
+      const query: Record<string, string> = { date, page: String(page) };
+      if (config.bookmakerId !== undefined) query.bookmaker = String(config.bookmakerId);
+
+      const envelope = await http.get<ApiFootballEnvelope<RawOddsEntry[]>>({
+        path: '/odds',
+        query,
+        cost: 1,
+      });
+      requestsUsed++;
+
+      totalPages = envelope.paging?.total ?? 1;
+      for (const entry of envelope.response ?? []) events.push(mapEntry(entry, capturedAt));
+      page++;
+    }
+
+    return { events, requestsUsed };
+  }
+
   return {
     name: API_FOOTBALL_ODDS,
+
+    /** A whole date in pages of ten, for when most of a bulletin is wanted. */
+    async getBulletinByDate(date: string, maxRequests: number): Promise<ProviderBulletin> {
+      const capturedAt = new Date();
+      try {
+        const { events } = await fetchDate(date, capturedAt, maxRequests);
+        return { capturedAt, events, quotaRemaining: http.reportedQuotaRemaining };
+      } catch (error) {
+        log.warn('date odds fetch failed', { date, error: String(error) });
+        return { capturedAt, events: [], quotaRemaining: http.reportedQuotaRemaining };
+      }
+    },
 
     async getSupportedCompetitions() {
       // Odds are addressed by fixture here, so there is no competition key to

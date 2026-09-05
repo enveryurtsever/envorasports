@@ -419,8 +419,8 @@
     "home": "Ev",
     "away": "Dep",
     "draw": "Beraberlik",
-    "AH_HOME": "HMS 1 ({sign}{handicap, number})",
-    "AH_AWAY": "HMS 2 ({sign}{handicap, number})"
+    "AH_HOME": "{team} {sign}{handicap, number}",
+    "AH_AWAY": "{team} {sign}{handicap, number}"
   },
   "disclaimer": {
     "short": "Tahminler istatistiksel öngörülerdir; sonuç garantisi vermez.",
@@ -533,6 +533,7 @@
   "focus": {
     "focus_htft": "İY/MS",
     "focus_goals6": "6+ Gol",
-    "focus_other": "Karma"
+    "focus_other": "Karma",
+    "focus_tenfold": "10'lu Kombine"
   }
 }

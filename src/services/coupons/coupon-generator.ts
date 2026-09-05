@@ -22,6 +22,8 @@ import {
   type SelectionRef,
 } from './correlation';
 import { buildSystemPlan, parseSystemSizes, SystemPlanError } from '@/lib/coupons/system-math';
+import { combinationCount } from '@/lib/math/combinatorics';
+import { MIN_COUPON_STAKE } from '@/lib/format/currency';
 import {
   MARKET,
   findSelection,
@@ -195,6 +197,23 @@ export function filterForCategory(
   });
 }
 
+/** Columns a system of these sizes over this many legs will produce. */
+function plannedColumns(sizes: number[], legs: number): number {
+  return sizes.reduce((total, k) => total + Number(combinationCount(legs, k)), 0);
+}
+
+/**
+ * Raises the misli until columns x stake clears the minimum slip.
+ *
+ * Ten columns at one lira is a ten-lira coupon, which no shop would take. The
+ * per-column stake is the lever a real slip uses, so it goes up rather than the
+ * column count coming down.
+ */
+function systemStakePerColumn(configured: number, columns: number): number {
+  if (columns <= 0) return configured;
+  return Math.max(configured, Math.ceil(MIN_COUPON_STAKE / columns));
+}
+
 /**
  * Handicaps not offered on a coupon: whole lines, which refund on an exact
  * margin and cannot say so in a chip, and +/-0.5, which is the match result
@@ -243,6 +262,8 @@ export function buildCoupon(
   offset = 0,
   /** Keeps a category's coupons on different fixtures; see `eligible` below. */
   excludeUsedMatches = false,
+  /** Drops the per-market cap when a slate cannot otherwise be filled. */
+  relaxMarketMix = false,
 ): BuiltCoupon | null {
   const ranked = [...pool].sort((a, b) => {
     // Push the coupon toward matches and markets the earlier coupons did not
@@ -269,12 +290,32 @@ export function buildCoupon(
 
   const chosen: Candidate[] = [];
   const chosenMatches = new Set<string>();
+
+  /**
+   * Legs already taken from each market.
+   *
+   * Ranking by edge alone put Asian handicap on every leg of every coupon —
+   * the market where the model most often disagrees with the price, so it wins
+   * the ranking every time. A slate of five identical-looking coupons is worth
+   * less than five that read differently, so no market may take more than half
+   * a coupon's legs; on a two-leg coupon that means two different markets.
+   */
+  const marketCounts = new Map<string, number>();
+  /**
+   * Short coupons must mix markets — two legs of Asian handicap is one idea
+   * twice. Long ones need the room: a ten-leg coupon can only be built from the
+   * markets that happen to be priced, and refusing it for being handicap-heavy
+   * means no coupon at all.
+   */
+  const perMarketCap =
+    settings.maxSelections <= 3 ? 1 : Math.max(2, Math.ceil(settings.maxSelections * 0.6));
   let totalOdds = dec(1);
 
   for (const candidate of available) {
     if (chosen.length >= settings.maxSelections) break;
 
     if (settings.oneSelectionPerMatch && chosenMatches.has(candidate.matchId)) continue;
+    if (!relaxMarketMix && (marketCounts.get(candidate.marketCode) ?? 0) >= perMarketCap) continue;
 
     const correlation = maxCorrelationWith(matrix, refOf(candidate), chosen.map(refOf));
     if (correlation > settings.maxCorrelation) continue;
@@ -288,6 +329,7 @@ export function buildCoupon(
 
     chosen.push(candidate);
     chosenMatches.add(candidate.matchId);
+    marketCounts.set(candidate.marketCode, (marketCounts.get(candidate.marketCode) ?? 0) + 1);
     totalOdds = nextOdds;
 
     if (chosen.length >= settings.minSelections && totalOdds.greaterThanOrEqualTo(settings.minTotalOdds)) {
@@ -475,6 +517,8 @@ export function buildCategoryCoupons(
           usedMarkets,
           weights,
           Math.floor(attempt / STRATEGIES.length),
+          false,
+          true,
         );
         if (!coupon || !isDistinct(coupon, coupons)) continue;
 
@@ -914,6 +958,25 @@ async function generateSystemCoupons(
    */
   const attemptsPerDay = Math.max(1, system.couponCount);
 
+  /**
+   * Fixtures an earlier system in this slate already used.
+   *
+   * Without it three systems drawn from the same day's ranking share most of
+   * their legs, and the slate is one coupon shown three times. The first round
+   * insists on fresh fixtures; a second round drops the insistence only if the
+   * slate could not otherwise be filled.
+   */
+  const slateMatches = new Set<string>();
+  /**
+   * Base sets already produced.
+   *
+   * The relaxed second round draws from the same ranking with the exclusion
+   * lifted, so without this it rebuilds the set the first round already used
+   * and the slate shows the same coupon twice at the same odds.
+   */
+  const slateSignatures = new Set<string>();
+
+  for (const round of [0, 1]) {
   for (const groupKey of groupKeys) {
     if (produced >= system.couponCount) break;
 
@@ -924,9 +987,16 @@ async function generateSystemCoupons(
     for (let pass = 0; pass < attemptsPerDay; pass++) {
     if (produced >= system.couponCount) break;
 
-    // Each pass drops the previous pass's strongest leg, so the sets overlap
-    // without repeating. Legs may be shared between systems; a whole set is not.
-    const groupPool = pass === 0 ? dayPool : dayPool.slice(pass);
+    /**
+     * Filtered per pass, not per day: the exclusion list grows as each system
+     * is built, and a snapshot taken before the first one is empty for all
+     * three. Each pass also starts further down the ranking, so two systems
+     * drawn from the same day are different sets rather than the same set
+     * shifted by one.
+     */
+    const fresh =
+      round > 0 ? dayPool : dayPool.filter((c) => !slateMatches.has(c.matchId));
+    const groupPool = pass === 0 ? fresh : fresh.slice(pass);
 
     const base: Candidate[] = [];
     const usedMatches = new Set<string>();
@@ -943,6 +1013,13 @@ async function generateSystemCoupons(
 
     if (base.length < system.minBaseSelections || base.length < Math.max(...sizes)) continue;
 
+    const signature = base
+      .map((c) => c.predictionId)
+      .sort()
+      .join('|');
+    if (slateSignatures.has(signature)) continue;
+    slateSignatures.add(signature);
+
     let plan;
     try {
       plan = buildSystemPlan({
@@ -953,7 +1030,13 @@ async function generateSystemCoupons(
           probability: c.probability,
         })),
         systemSizes: sizes,
-        stakePerColumn: system.stakePerColumn,
+        /**
+         * A system's cost is columns x stake per column, and that total still
+         * has to clear the minimum a slip can be placed for. Ten columns at one
+         * lira is ten lira, which no shop would take — the misli goes up until
+         * the coupon is playable.
+         */
+        stakePerColumn: systemStakePerColumn(system.stakePerColumn, plannedColumns(sizes, base.length)),
         maxTotalStake: system.maxTotalStake,
       });
     } catch (error) {
@@ -1084,7 +1167,10 @@ async function generateSystemCoupons(
     }
 
     produced++;
+    base.forEach((c) => slateMatches.add(c.matchId));
     }
+  }
+  if (produced >= system.couponCount) break;
   }
 
   outcome.produced = produced;

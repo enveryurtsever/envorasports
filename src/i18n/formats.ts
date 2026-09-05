@@ -11,7 +11,10 @@ export const TIME_ZONE = 'Europe/Istanbul';
  */
 export const APP_FORMATS = {
   dateTime: {
-    kickoff: { hour: '2-digit', minute: '2-digit' },
+    // The day matters on a coupon that spans a weekend: "14:00" alone does not
+    // say whether it is Saturday's game or Sunday's.
+    kickoff: { weekday: 'short', hour: '2-digit', minute: '2-digit' },
+    timeOnly: { hour: '2-digit', minute: '2-digit' },
     short: { day: '2-digit', month: 'short' },
     full: { dateStyle: 'medium', timeStyle: 'short' },
   },

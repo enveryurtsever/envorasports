@@ -214,7 +214,7 @@ export async function CouponCard({
                     {score ? <span className="tabular shrink-0 text-muted">{score}</span> : null}
                   </span>
                   <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                    <span className="shrink-0 text-muted">
+                    <span className="shrink-0 text-muted uppercase">
                       {format.dateTime(selection.match.kickoffUtc, 'kickoff')}
                     </span>
                     <LegStatus

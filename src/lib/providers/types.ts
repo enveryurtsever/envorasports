@@ -227,6 +227,14 @@ export interface OddsProvider {
    * shape on a metered plan — one call per competition, not one per match.
    */
   getBulletin(competitionKeys: string[]): Promise<ProviderBulletin>;
+  /**
+   * Every priced fixture on one calendar date, bounded by `maxRequests`.
+   *
+   * Providers that page a whole day ten fixtures at a time make this an order
+   * of magnitude cheaper than asking fixture by fixture. Optional: a provider
+   * addressed only by competition has nothing to implement.
+   */
+  getBulletinByDate?(date: string, maxRequests: number): Promise<ProviderBulletin>;
 }
 
 /** Thrown when a provider cannot answer; never crashes the pipeline (§43). */
