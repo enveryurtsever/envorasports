@@ -217,6 +217,16 @@ export function buildCoupon(
   usedMatches: Set<string>,
   usedMarkets: Set<string>,
   weights: CouponScoringWeights,
+  /**
+   * Skips this many of the best-ranked candidates.
+   *
+   * Six strategies over a small pool keep returning the same few legs, which is
+   * why a category asked for five coupons and produced two. Building the next
+   * one from further down the ranking gives a genuinely different coupon out of
+   * the same candidates — the legs may be shared with an earlier coupon, which
+   * is allowed, but the combination is not.
+   */
+  offset = 0,
 ): BuiltCoupon | null {
   const ranked = [...pool].sort((a, b) => {
     // Push the coupon toward matches and markets the earlier coupons did not
@@ -226,11 +236,13 @@ export function buildCoupon(
     return strategy.rank(b) + noveltyB - (strategy.rank(a) + noveltyA);
   });
 
+  const available = offset > 0 ? ranked.slice(offset) : ranked;
+
   const chosen: Candidate[] = [];
   const chosenMatches = new Set<string>();
   let totalOdds = dec(1);
 
-  for (const candidate of ranked) {
+  for (const candidate of available) {
     if (chosen.length >= settings.maxSelections) break;
 
     if (settings.oneSelectionPerMatch && chosenMatches.has(candidate.matchId)) continue;
@@ -265,6 +277,11 @@ export function buildCoupon(
   // that move together are less likely to all land than the product implies.
   const naive = combinedProbability(chosen.map((c) => c.probability));
   const estimatedProbability = naive.times(1 - correlation * 0.25);
+
+  // The floor on the whole coupon, not on any single leg. A category asking
+  // for both long odds and a high chance produces nothing and says so, rather
+  // than being satisfied by a probability bent to fit.
+  if (Number(estimatedProbability) < settings.minCombinedProbability) return null;
 
   const couponEv = estimatedProbability.times(totalOdds).minus(1);
 
@@ -362,9 +379,19 @@ export function buildCategoryCoupons(
     const groupPool = pool.filter((c) => c.targetDate === groupKey);
     if (groupPool.length === 0) continue;
 
-    for (const strategy of STRATEGIES) {
+    // Six strategies over a small pool converge on the same few legs, which is
+    // why a category asked for five and produced two. Once they are exhausted
+    // the same strategies run again from further down the ranking, which yields
+    // a different combination out of the same candidates. Legs may repeat
+    // across coupons; a whole coupon may not.
+    const maxAttempts = STRATEGIES.length * 5;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (coupons.length >= settings.couponCount) break;
       if (coupons.filter((c) => c.targetDate === groupKey).length >= perGroup) break;
+
+      const strategy = STRATEGIES[attempt % STRATEGIES.length]!;
+      const offset = Math.floor(attempt / STRATEGIES.length);
 
       const coupon = buildCoupon(
         groupPool,
@@ -374,6 +401,7 @@ export function buildCategoryCoupons(
         usedMatches,
         usedMarkets,
         weights,
+        offset,
       );
       if (!coupon || !isDistinct(coupon, coupons)) continue;
 

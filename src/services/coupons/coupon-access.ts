@@ -149,7 +149,10 @@ const COUPON_SELECT = {
   firstKickoffUtc: true,
   lastKickoffUtc: true,
   selections: {
-    orderBy: { sortOrder: 'asc' },
+    // Kickoff order, the way a slip reads: the match being played next is at
+    // the top. sortOrder is the generator's assembly order, which is the order
+    // the legs were picked in and means nothing to a reader.
+    orderBy: { match: { scheduledKickoffUtc: 'asc' } },
     select: {
       id: true,
       marketCode: true,

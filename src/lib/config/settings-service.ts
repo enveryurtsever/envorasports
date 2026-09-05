@@ -70,6 +70,7 @@ export async function getCategorySettings(): Promise<Record<CouponCategory, Coup
       maxRisk: Number(row.maxRisk),
       maxCorrelation: Number(row.maxCorrelation),
       minDataQuality: Number(row.minDataQuality),
+      minCombinedProbability: Number(row.minCombinedProbability),
       oneSelectionPerMatch: row.oneSelectionPerMatch,
       allowedMarkets: row.allowedMarkets,
     });

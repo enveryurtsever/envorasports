@@ -41,6 +41,14 @@ export const couponCategorySettingsSchema = z
     maxRisk: probability,
     maxCorrelation: probability,
     minDataQuality: probability,
+    /**
+     * Floor on the chance the whole coupon lands. It trades directly against
+     * minTotalOdds — an honest coupon prices at roughly 1/probability, so
+     * demanding 0.85 caps the odds near 1.18. Both bounds are enforced, and a
+     * category configured with an impossible pair produces nothing and records
+     * why rather than inventing a probability that satisfies it.
+     */
+    minCombinedProbability: probability,
 
     oneSelectionPerMatch: z.boolean(),
     /** Empty = every active market is eligible. */
@@ -150,7 +158,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     category: 'HIGH_CONFIDENCE',
     enabled: true,
     couponCount: 5,
-    minTotalOdds: 1.5,
+    minTotalOdds: 1.12,
     // A 2-leg coupon whose legs must also carry positive edge lands around
     // 2.4-3.5; a 2.5 ceiling made the category unfillable in practice.
     maxTotalOdds: 4,
@@ -163,6 +171,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     maxRisk: 0.4,
     maxCorrelation: 0.3,
     minDataQuality: 0.6,
+    minCombinedProbability: 0.85,
     oneSelectionPerMatch: true,
     allowedMarkets: [
       MARKET.DOUBLE_CHANCE,
@@ -177,7 +186,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     enabled: true,
     // §30's example default range.
     couponCount: 5,
-    minTotalOdds: 2.5,
+    minTotalOdds: 1.75,
     maxTotalOdds: 6,
     minSelections: 2,
     maxSelections: 5,
@@ -188,6 +197,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     maxRisk: 0.6,
     maxCorrelation: 0.4,
     minDataQuality: 0.5,
+    minCombinedProbability: 0.55,
     oneSelectionPerMatch: true,
     allowedMarkets: [],
   },
@@ -214,6 +224,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     maxRisk: 0.85,
     maxCorrelation: 0.5,
     minDataQuality: 0.45,
+    minCombinedProbability: 0.005,
     oneSelectionPerMatch: true,
     allowedMarkets: [],
   },
@@ -234,6 +245,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     maxRisk: 0.7,
     maxCorrelation: 0.35,
     minDataQuality: 0.5,
+    minCombinedProbability: 0.10,
     oneSelectionPerMatch: true,
     allowedMarkets: [],
   },
@@ -250,7 +262,7 @@ export const DEFAULT_SYSTEM_SETTINGS: SystemCouponSettings = {
   sourceCategories: ['HIGH_VALUE'],
   minBaseSelections: 6,
   maxBaseSelections: 8,
-  stakePerColumn: 5,
+  stakePerColumn: 1,
   maxTotalStake: 5000,
   // The operator's own currency: system stakes are real money in TL, not a
   // converted EUR figure.

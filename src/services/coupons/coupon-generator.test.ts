@@ -36,7 +36,10 @@ function candidate(overrides: Partial<Candidate> & { id: string }): Candidate {
   };
 }
 
-const balanced = DEFAULT_CATEGORY_SETTINGS.BALANCED_PICKS;
+// The shipped Balanced settings now carry a 0.55 floor on the whole coupon.
+// These fixtures use small, made-up probabilities to exercise the assembly
+// rules, so the floor is relaxed here and tested on its own below.
+const balanced = { ...DEFAULT_CATEGORY_SETTINGS.BALANCED_PICKS, minCombinedProbability: 0 };
 
 describe('filterForCategory', () => {
   it('drops candidates below the configured thresholds', () => {
@@ -298,5 +301,36 @@ describe('expectedColumnProbability', () => {
     expect(expectedColumnProbability([], 3)).toBe(0);
     expect(expectedColumnProbability([0.5], 0)).toBe(0);
     expect(expectedColumnProbability([0, 0], 2)).toBe(0);
+  });
+});
+
+describe('minCombinedProbability', () => {
+  const strategy = { name: 'highest_ev', rank: (c: Candidate) => Number(c.expectedValue) } as const;
+
+  it('rejects a coupon whose legs cannot land together often enough', () => {
+    // Two legs at 0.45 land together 20% of the time. A category asking for 55%
+    // must not be handed it, however good each leg looks on its own.
+    const pool = [
+      candidate({ id: 'a', probability: dec('0.45'), odds: dec('2.20') }),
+      candidate({ id: 'b', matchId: 'm2', probability: dec('0.45'), odds: dec('2.20') }),
+    ];
+    const settings = { ...balanced, minCombinedProbability: 0.55, minTotalOdds: 1.1 };
+
+    expect(
+      buildCoupon(pool, settings, baselineMatrix, strategy, new Set(), new Set(), DEFAULT_SCORING_WEIGHTS),
+    ).toBeNull();
+
+    // The same pool passes once the floor is one it can actually meet.
+    expect(
+      buildCoupon(
+        pool,
+        { ...settings, minCombinedProbability: 0.15 },
+        baselineMatrix,
+        strategy,
+        new Set(),
+        new Set(),
+        DEFAULT_SCORING_WEIGHTS,
+      ),
+    ).not.toBeNull();
   });
 });

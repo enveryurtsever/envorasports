@@ -51,13 +51,40 @@ export async function getQuotaState(policy: QuotaPolicy, now = new Date()): Prom
     where: { provider: policy.provider, createdAt: { gte: start, lt: end } },
     _sum: { cost: true },
   });
-  const used = aggregate._sum.cost ?? 0;
+  const counted = aggregate._sum.cost ?? 0;
+
+  /**
+   * The provider's own header wins when it disagrees with our count.
+   *
+   * Our window is the UTC day; the provider's is its own, and API-Football's
+   * reset mid-morning while ours had not. Our log said 100/100 and refused
+   * every call while the provider was reporting 51 still available — the guard
+   * meant to protect the budget was destroying it instead. The count remains
+   * the fallback for providers that report nothing, and the smaller of the two
+   * still wins, so this can only ever be more cautious than the provider.
+   */
+  const latest = await prisma.providerRequestLog.findFirst({
+    where: {
+      provider: policy.provider,
+      createdAt: { gte: start, lt: end },
+      quotaRemaining: { not: null },
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { quotaRemaining: true },
+  });
+
+  const reported = latest?.quotaRemaining ?? null;
+  const remaining =
+    reported === null
+      ? Math.max(0, policy.budget - counted)
+      : Math.min(reported, policy.budget);
+
   return {
     provider: policy.provider,
     window: policy.window,
     budget: policy.budget,
-    used,
-    remaining: Math.max(0, policy.budget - used),
+    used: policy.budget - remaining,
+    remaining,
     windowStart: start,
     windowEnd: end,
   };

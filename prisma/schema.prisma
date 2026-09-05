@@ -802,6 +802,9 @@ model CouponCategorySetting {
   maxRisk          Decimal @map("max_risk") @db.Decimal(5, 4)
   maxCorrelation   Decimal @map("max_correlation") @db.Decimal(5, 4)
   minDataQuality   Decimal @map("min_data_quality") @db.Decimal(5, 4)
+  /// Floor on the chance the whole coupon lands, not on any single leg. This is
+  /// the inverse of the odds floor: a coupon cannot be both long and likely.
+  minCombinedProbability Decimal @default(0) @map("min_combined_probability") @db.Decimal(9, 8)
 
   oneSelectionPerMatch Boolean  @default(true) @map("one_selection_per_match")
   /// Market codes eligible for this category; empty = all active markets.

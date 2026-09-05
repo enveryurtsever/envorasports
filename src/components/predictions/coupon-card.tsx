@@ -4,6 +4,7 @@ import { getReferenceStake } from '@/lib/format/currency';
 import { METRIC_TOKENS } from '@/lib/format/metric-tokens';
 import { formatSelection } from '@/lib/markets/labels';
 import { KickoffCountdown } from '@/components/predictions/kickoff-countdown';
+import { LegStatus } from '@/components/predictions/leg-status';
 import { cn } from '@/lib/format/cn';
 import type { UnlockedCoupon } from '@/services/coupons/coupon-access';
 
@@ -212,10 +213,14 @@ export async function CouponCard({
                     </span>
                     {score ? <span className="tabular shrink-0 text-muted">{score}</span> : null}
                   </span>
-                  <span className="mt-0.5 flex items-center gap-1.5">
+                  <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
                     <span className="shrink-0 text-muted">
                       {format.dateTime(selection.match.kickoffUtc, 'kickoff')}
                     </span>
+                    <LegStatus
+                      kickoffIso={selection.match.kickoffUtc.toISOString()}
+                      settled={selection.resultStatus !== 'PENDING'}
+                    />
                     <span className="truncate rounded border border-white/20 bg-white/10 px-1.5 py-0.5 text-[0.65rem] font-semibold text-paper">
                       {formatSelection(translate, selection.marketCode, selection.selectionCode, {
                         home: selection.match.homeTeam,
