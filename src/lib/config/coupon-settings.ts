@@ -299,7 +299,12 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
   HIGH_VALUE: {
     category: 'HIGH_VALUE',
     enabled: true,
-    couponCount: 3,
+    /**
+     * Zero: every Surprise coupon is a system now. A straight accumulator at
+     * these odds returns nothing unless every leg lands, and the system slate
+     * below carries the same selections with a real chance of a return.
+     */
+    couponCount: 0,
     // The point of this category is the long shot, so the floor is the target:
     // a coupon that cannot reach 100.0 is not a Surprise, it is a Balanced one
     // wearing the label. Reaching it takes five or six legs, which is why the

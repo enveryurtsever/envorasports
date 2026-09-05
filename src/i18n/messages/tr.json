@@ -206,7 +206,16 @@
     "lineupUnavailable": "Kadro bilgisi yok",
     "count": "{count, plural, other {# maç}}",
     "pricesAvailable": "Oran mevcut",
-    "signInForAnalysis": "Bu maçların arkasındaki model analizini görmek için giriş yapın."
+    "signInForAnalysis": "Bu maçların arkasındaki model analizini görmek için giriş yapın.",
+    "playedTitle": "Oynadığımız Maçlar",
+    "playedSubtitle": "Son bir ayda tahmin verdiğimiz her maç ve tuttu mu tutmadı mı.",
+    "metricMatches": "Maç",
+    "metricWon": "Bildik",
+    "metricLost": "Bilemedik",
+    "metricHitRate": "İsabet",
+    "pendingNote": "{count} tahmin henüz sonuçlanmadı; isabet oranı sadece sonuçlananlar üzerinden.",
+    "pendingShort": "Bekliyor",
+    "weekSummary": "{matches} maç · {won} bildik · {lost} bilemedik"
   },
   "systems": {
     "title": "Kombinasyon Sistemleri",

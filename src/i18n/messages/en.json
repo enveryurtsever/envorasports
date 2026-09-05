@@ -206,7 +206,16 @@
     "lineupUnavailable": "Lineup not available",
     "count": "{count, plural, one {# match} other {# matches}}",
     "pricesAvailable": "Prices available",
-    "signInForAnalysis": "Sign in to see the model analysis behind these matches."
+    "signInForAnalysis": "Sign in to see the model analysis behind these matches.",
+    "playedTitle": "Matches We Backed",
+    "playedSubtitle": "Every match we made a pick on in the last month, and how it went.",
+    "metricMatches": "Matches",
+    "metricWon": "Right",
+    "metricLost": "Wrong",
+    "metricHitRate": "Hit rate",
+    "pendingNote": "{count} picks are not settled yet; the hit rate counts only settled ones.",
+    "pendingShort": "Pending",
+    "weekSummary": "{matches} matches · {won} right · {lost} wrong"
   },
   "systems": {
     "title": "Combination Systems",

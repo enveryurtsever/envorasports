@@ -594,8 +594,16 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     },
   });
 
-  // Regenerating a day replaces that day's coupons rather than duplicating.
-  await prisma.coupon.deleteMany({ where: { generationRunId: run.id } });
+  /**
+   * Regenerating a day replaces that day's coupons rather than duplicating —
+   * but never the settled ones. A coupon that has been graded is the record of
+   * what was actually predicted, and a re-run for any reason (a settings
+   * change, a wider bulletin) was quietly erasing yesterday's results along
+   * with the tips that produced them.
+   */
+  await prisma.coupon.deleteMany({
+    where: { generationRunId: run.id, resultStatus: 'PENDING' },
+  });
 
   const groupKeys =
     options.grouping === 'PER_DAY' ? options.window.days : [options.window.startDate];
