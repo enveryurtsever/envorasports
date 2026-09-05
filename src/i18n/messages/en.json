@@ -152,7 +152,8 @@
     "brierScore": "Brier score",
     "logLoss": "Log loss",
     "maxDrawdown": "Max drawdown",
-    "sampleSize": "Sample size"
+    "sampleSize": "Sample size",
+    "winProbability": "Chance to land"
   },
   "level": {
     "veryLow": "Very low",

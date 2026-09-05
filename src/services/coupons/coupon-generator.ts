@@ -253,7 +253,20 @@ export function buildCoupon(
   const estimatedProbability = naive.times(1 - correlation * 0.25);
 
   const couponEv = estimatedProbability.times(totalOdds).minus(1);
-  const confidence = chosen.reduce((sum, c) => sum + c.confidence, 0) / chosen.length;
+
+  /**
+   * Mean leg confidence measures how well-supported each individual pick is —
+   * data quality, model agreement. It is not the coupon's chance of coming in,
+   * and it does not fall as legs are added, so an eight-leg surprise coupon
+   * read as 77% confident on an outcome that lands 3% of the time. It stays as
+   * a ranking input, where comparing coupons of similar length is exactly what
+   * it is good for.
+   */
+  const legConfidence = chosen.reduce((sum, c) => sum + c.confidence, 0) / chosen.length;
+
+  // What a reader means by confidence in a coupon is the chance every leg lands
+  // together, which is what the joint probability already measures.
+  const confidence = Number(estimatedProbability);
   const risk = chosen.reduce((sum, c) => sum + c.risk, 0) / chosen.length;
 
   const distinctMarkets = new Set(chosen.map((c) => c.marketCode)).size;
@@ -262,7 +275,7 @@ export function buildCoupon(
   const score =
     Number(estimatedProbability) * weights.probabilityWeight +
     Number(couponEv) * weights.valueWeight +
-    confidence * weights.confidenceWeight +
+    legConfidence * weights.confidenceWeight +
     diversification * weights.diversificationWeight -
     correlation * weights.correlationPenalty -
     risk * weights.riskPenalty;
@@ -686,7 +699,8 @@ async function generateSystemCoupons(
     }
 
     const totalOdds = base.reduce<Decimal>((product, c) => product.times(c.odds), dec(1));
-    const confidence = base.reduce((sum, c) => sum + c.confidence, 0) / base.length;
+    // Ranking input only — see the note on legConfidence above.
+    const legConfidence = base.reduce((sum, c) => sum + c.confidence, 0) / base.length;
     const risk = base.reduce((sum, c) => sum + c.risk, 0) / base.length;
     const distinctMarkets = new Set(base.map((c) => c.marketCode)).size;
     const diversification = Math.min(1, distinctMarkets / base.length);
@@ -713,14 +727,14 @@ async function generateSystemCoupons(
       totalOdds: toOdds(totalOdds),
       estimatedProbability,
       expectedValue: couponEv,
-      confidence,
+      confidence: Number(estimatedProbability),
       risk,
       correlation,
       diversification,
       score:
         Number(estimatedProbability) * weights.probabilityWeight +
         Number(couponEv) * weights.valueWeight +
-        confidence * weights.confidenceWeight +
+        legConfidence * weights.confidenceWeight +
         diversification * weights.diversificationWeight -
         correlation * weights.correlationPenalty -
         risk * weights.riskPenalty,

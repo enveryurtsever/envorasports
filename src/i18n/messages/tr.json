@@ -152,7 +152,8 @@
     "brierScore": "Brier skoru",
     "logLoss": "Log kaybı",
     "maxDrawdown": "Maksimum düşüş",
-    "sampleSize": "Örneklem büyüklüğü"
+    "sampleSize": "Örneklem büyüklüğü",
+    "winProbability": "Tutma olasılığı"
   },
   "level": {
     "veryLow": "Çok düşük",

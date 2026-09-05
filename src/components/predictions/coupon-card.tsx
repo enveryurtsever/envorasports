@@ -1,11 +1,8 @@
 import { getFormatter, getLocale, getTranslations } from 'next-intl/server';
 import { PremiumCard } from '@/components/ui/card';
-import { Modal } from '@/components/ui/modal';
-import { AiAnalysis } from '@/components/predictions/ai-analysis';
 import { getReferenceStake } from '@/lib/format/currency';
-import { METRIC_TOKENS, signedTone } from '@/lib/format/metric-tokens';
+import { METRIC_TOKENS } from '@/lib/format/metric-tokens';
 import { formatSelection } from '@/lib/markets/labels';
-import { buildCouponNarrationPayload } from '@/services/narration/coupon-payload';
 import { KickoffCountdown } from '@/components/predictions/kickoff-countdown';
 import { cn } from '@/lib/format/cn';
 import type { UnlockedCoupon } from '@/services/coupons/coupon-access';
@@ -98,27 +95,52 @@ export async function CouponCard({
 
       <div className="flex flex-col gap-3 px-4 pt-4 pb-4">
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <span className="inline-block rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-[0.65rem] font-semibold tracking-wide uppercase">
-              {tCat(`${coupon.category}.short`)}
+          <div className="flex min-w-0 flex-col gap-1">
+            <span className="flex flex-wrap items-center gap-1.5">
+              <span className="inline-block rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-[0.65rem] font-semibold tracking-wide uppercase">
+                {tCat(`${coupon.category}.short`)}
+              </span>
+              {isPreview ? (
+                <span className="inline-block rounded-full border border-emerald-primary/40 bg-emerald-primary/10 px-2 py-0.5 text-[0.65rem] font-medium text-emerald-bright">
+                  {te('freePreview')}
+                </span>
+              ) : null}
             </span>
-            <p className="mt-1.5 truncate text-[0.7rem] text-muted">
-              {coupon.reference}
-              {isPreview ? ` · ${te('freePreview')}` : ''}
-            </p>
-          </div>
 
-          {settled && !won ? (
-            <span className="rounded-full border border-rose-500/50 bg-rose-500/10 px-2.5 py-0.5 text-xs font-medium text-rose-300">
-              {ts(coupon.resultStatus)}
-            </span>
-          ) : (
             <KickoffCountdown
               firstKickoffIso={coupon.firstKickoffUtc.toISOString()}
               lastKickoffIso={coupon.lastKickoffUtc.toISOString()}
               settled={settled}
-              className="shrink-0 text-[0.7rem] font-medium"
+              className="text-[0.7rem] font-medium"
             />
+          </div>
+
+          {/* The headline number: the chance every leg lands together. A lost
+              coupon says so instead — the result outranks the estimate. */}
+          {settled && !won ? (
+            <span className="shrink-0 rounded-full border border-rose-500/50 bg-rose-500/10 px-2.5 py-0.5 text-xs font-medium text-rose-300">
+              {ts(coupon.resultStatus)}
+            </span>
+          ) : (
+            <span
+              className={cn(
+                'shrink-0 rounded-lg border px-2.5 py-1 text-center',
+                METRIC_TOKENS.modelProbability.border,
+                METRIC_TOKENS.modelProbability.bg,
+              )}
+            >
+              <span className="block text-[0.55rem] leading-none tracking-wide text-muted uppercase">
+                {tm('winProbability')}
+              </span>
+              <span
+                className={cn(
+                  'tabular mt-0.5 block text-base leading-none font-bold',
+                  METRIC_TOKENS.modelProbability.text,
+                )}
+              >
+                {format.number(coupon.estimatedProbability, 'percent')}
+              </span>
+            </span>
           )}
         </div>
 
@@ -155,28 +177,9 @@ export async function CouponCard({
           </div>
         </div>
 
-        <dl className="tabular grid grid-cols-3 gap-2 border-y border-white/10 py-2 text-center">
-          <div>
-            <dt className="text-[0.6rem] text-muted uppercase">{tm('confidence')}</dt>
-            <dd className={cn('text-sm font-semibold', METRIC_TOKENS.confidence.text)}>
-              {format.number(coupon.confidenceScore, 'percent')}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-[0.6rem] text-muted uppercase">{tm('modelProbability')}</dt>
-            <dd className={cn('text-sm font-semibold', METRIC_TOKENS.modelProbability.text)}>
-              {format.number(coupon.estimatedProbability, 'percent')}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-[0.6rem] text-muted uppercase">{tm('ev')}</dt>
-            <dd className={cn('text-sm font-semibold', signedTone('expectedValue', coupon.expectedValue))}>
-              {format.number(coupon.expectedValue, 'signedPercent')}
-            </dd>
-          </div>
-        </dl>
-
-        <ul className="flex-1 space-y-2">
+        {/* Each leg is two lines of its own, so without a rule between them the
+            second line of one match reads as part of the next. */}
+        <ul className="flex-1 divide-y divide-white/10">
           {coupon.selections.map((selection) => {
             const mark = LEG_MARK[selection.resultStatus];
             const score =
@@ -185,7 +188,10 @@ export async function CouponCard({
                 : null;
 
             return (
-              <li key={selection.id} className="flex items-start gap-2 text-xs">
+              <li
+                key={selection.id}
+                className="flex items-start gap-2 py-2 text-xs first:pt-0 last:pb-0"
+              >
                 <span
                   aria-label={mark ? ts(selection.resultStatus) : undefined}
                   className={cn(
@@ -249,49 +255,6 @@ export async function CouponCard({
           </span>
         </div>
 
-        <Modal
-          triggerLabel={t('openAnalysis')}
-          closeLabel={t('closeAnalysis')}
-          title={t('analysisFor', { reference: coupon.reference })}
-          triggerClassName="w-full rounded-lg border border-white/15 px-3 py-2 text-xs font-medium transition-colors hover:border-emerald-bright hover:text-emerald-bright"
-        >
-          <AiAnalysis
-            entityType="coupon"
-            entityId={coupon.id}
-            locale={locale === 'en' ? 'en' : 'tr'}
-            payload={buildCouponNarrationPayload(
-              {
-                reference: coupon.reference,
-                category: coupon.category,
-                totalOdds: coupon.totalOdds,
-                estimatedProbability: coupon.estimatedProbability,
-                expectedValue: coupon.expectedValue,
-                confidenceScore: coupon.confidenceScore,
-                riskScore: coupon.riskScore,
-                system: coupon.system
-                  ? {
-                      label: coupon.system.systemLabel,
-                      legs: coupon.system.baseSelectionCount,
-                      columns: coupon.system.columnCount,
-                    }
-                  : null,
-                selections: coupon.selections.map((s) => ({
-                  homeTeam: s.match.homeTeam,
-                  awayTeam: s.match.awayTeam,
-                  league: s.match.league,
-                  marketCode: s.marketCode,
-                  selectionCode: s.selectionCode,
-                  odds: s.odds,
-                  probability: s.probability,
-                  impliedProbability: s.impliedProbability,
-                  edge: s.edge,
-                })),
-              },
-              translate,
-              format,
-            )}
-          />
-        </Modal>
       </div>
     </PremiumCard>
   );
