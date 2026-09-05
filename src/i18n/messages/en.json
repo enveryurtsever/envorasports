@@ -153,7 +153,8 @@
     "logLoss": "Log loss",
     "maxDrawdown": "Max drawdown",
     "sampleSize": "Sample size",
-    "winProbability": "Chance to land"
+    "winProbability": "Chance to land",
+    "returnProbability": "Chance of a return"
   },
   "level": {
     "veryLow": "Very low",
@@ -408,7 +409,11 @@
     "AH": "{team} {handicap}",
     "home": "Home",
     "away": "Away",
-    "draw": "Draw"
+    "draw": "Draw",
+    "AH_WIN": "{team} to win",
+    "AH_NOT_LOSE": "{team} not to lose",
+    "AH_WIN_BY": "{team} to win by {margin}+",
+    "AH_NOT_LOSE_BY": "{team} not to lose by {margin}+"
   },
   "disclaimer": {
     "short": "Predictions are statistical estimates, not guarantees of outcomes.",

@@ -153,7 +153,8 @@
     "logLoss": "Log kaybı",
     "maxDrawdown": "Maksimum düşüş",
     "sampleSize": "Örneklem büyüklüğü",
-    "winProbability": "Tutma olasılığı"
+    "winProbability": "Tutma olasılığı",
+    "returnProbability": "Getiri olasılığı"
   },
   "level": {
     "veryLow": "Çok düşük",
@@ -408,7 +409,11 @@
     "AH": "{team} {handicap}",
     "home": "Ev",
     "away": "Dep",
-    "draw": "Beraberlik"
+    "draw": "Beraberlik",
+    "AH_WIN": "{team} Kazanır",
+    "AH_NOT_LOSE": "{team} Kaybetmez",
+    "AH_WIN_BY": "{team} {margin}+ Fark Kazanır",
+    "AH_NOT_LOSE_BY": "{team} {margin}+ Fark Kaybetmez"
   },
   "disclaimer": {
     "short": "Tahminler istatistiksel öngörülerdir; sonuç garantisi vermez.",

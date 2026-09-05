@@ -50,6 +50,30 @@ export interface CalibrationResult {
   calibratedGroups: string[][];
 }
 
+/** Guards the log: a probability of exactly 0 or 1 has no finite log-odds. */
+const LOGIT_EPSILON = 1e-6;
+
+/**
+ * Blends two probabilities in log-odds space rather than averaging them.
+ *
+ * A straight average is the wrong shape for a longshot. The model called a
+ * 14.00 outsider 41.7% where the vig-free market said 6.8%; averaging at weight
+ * 0.35 still returned 29.5%, four times the price, and a coupon of two such
+ * legs claimed a 670% edge. In log-odds the same blend gives 24.4%, and the
+ * pull grows with the size of the disagreement instead of staying proportional
+ * to it — which is the right behaviour, because a large disagreement with the
+ * market is overwhelmingly more likely to be the model's error than an edge.
+ *
+ * At w=0 this is the raw model and at w=1 the pure market, exactly as before.
+ */
+export function blendLogit(model: Decimal, market: Decimal, weight: number): Decimal {
+  const p = Math.min(1 - LOGIT_EPSILON, Math.max(LOGIT_EPSILON, Number(model)));
+  const q = Math.min(1 - LOGIT_EPSILON, Math.max(LOGIT_EPSILON, Number(market)));
+
+  const blended = Math.log(p / (1 - p)) * (1 - weight) + Math.log(q / (1 - q)) * weight;
+  return dec(1 / (1 + Math.exp(-blended)));
+}
+
 /**
  * Blends model probabilities toward the vig-free market price, group by group.
  *
@@ -74,12 +98,23 @@ export function blendWithMarket(
 
     const fair = removeVig(prices as Decimal[]);
 
-    for (const [index, code] of group.entries()) {
+    // Blend first, then renormalise. Log-odds blending is done one outcome at a
+    // time and does not preserve the sum, so without this the three 1X2
+    // probabilities would no longer add to 1 and every market derived from them
+    // would inherit the error.
+    const blended = group.map((code, index) => {
       const model = output.get(code);
-      if (!model) continue;
+      if (!model) return null;
+      return blendLogit(model, fair[index] as Decimal, w);
+    });
 
-      const market = fair[index] as Decimal;
-      output.set(code, clampProbability(model.times(1 - w).plus(market.times(w))));
+    const total = blended.reduce<Decimal>((sum, value) => (value ? sum.plus(value) : sum), dec(0));
+    if (total.lessThanOrEqualTo(0)) continue;
+
+    for (const [index, code] of group.entries()) {
+      const value = blended[index];
+      if (!value) continue;
+      output.set(code, clampProbability(value.dividedBy(total)));
     }
     calibrated.push(group);
   }

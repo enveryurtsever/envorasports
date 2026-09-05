@@ -182,8 +182,21 @@ export function mapBetValue(betId: number, value: string | number): Mapped | nul
       if (!match) return null;
 
       const side = match[1]!.toLowerCase() === 'home' ? 'HOME' : 'AWAY';
-      const handicap = Number(match[2]);
-      if (!Number.isFinite(handicap)) return null;
+      const line = Number(match[2]);
+      if (!Number.isFinite(line)) return null;
+
+      /**
+       * The line is quoted from the home team's perspective and the same number
+       * is repeated on the away row: "Away -1.5" is the away side of a line
+       * where the home team gives 1.5, so the away team *receives* +1.5.
+       *
+       * Taking the sign literally stored every away handicap inverted, and the
+       * damage was not visible as a bad price — it was visible as a huge edge,
+       * because an ~80% model probability got paired with the price of the
+       * other side. (The Odds API differs: its `point` is already side-specific,
+       * so that adapter must not do this.)
+       */
+      const handicap = side === 'HOME' ? line : -line;
 
       // Only lines the model actually prices; quarter-goal lines are not
       // modelled, so a price for one would have nothing to compare against.

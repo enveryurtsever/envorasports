@@ -130,7 +130,10 @@ export async function CouponCard({
               )}
             >
               <span className="block text-[0.55rem] leading-none tracking-wide text-muted uppercase">
-                {tm('winProbability')}
+                {/* A system pays out when its smallest size lands, not when
+                    every leg does, so its number answers a different question
+                    and must not be read as the chance of the maximum return. */}
+                {coupon.system ? tm('returnProbability') : tm('winProbability')}
               </span>
               <span
                 className={cn(
@@ -208,9 +211,6 @@ export async function CouponCard({
                       {selection.match.homeTeam} – {selection.match.awayTeam}
                     </span>
                     {score ? <span className="tabular shrink-0 text-muted">{score}</span> : null}
-                    <span className={cn('tabular shrink-0 font-semibold', METRIC_TOKENS.odds.text)}>
-                      {format.number(selection.odds, 'odds')}
-                    </span>
                   </span>
                   <span className="mt-0.5 flex items-center gap-1.5">
                     <span className="shrink-0 text-muted">
@@ -223,6 +223,18 @@ export async function CouponCard({
                       })}
                     </span>
                   </span>
+                </span>
+
+                {/* The odds get their own fixed column, centred on the two
+                    lines of the leg, so they read down the card as one column
+                    instead of drifting with the length of each team name. */}
+                <span
+                  className={cn(
+                    'tabular w-12 shrink-0 self-center text-center font-semibold',
+                    METRIC_TOKENS.odds.text,
+                  )}
+                >
+                  {format.number(selection.odds, 'odds')}
                 </span>
               </li>
             );

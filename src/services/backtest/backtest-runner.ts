@@ -52,6 +52,12 @@ export interface BacktestOptions {
   stakePerBet?: number;
   /** Cap on matches processed, so an exploratory run stays quick. */
   maxMatches?: number;
+  /**
+   * Overrides the model version's market-prior weight, so the parameter that
+   * decides how hard the model is pulled toward the price can be chosen by
+   * measurement instead of taste.
+   */
+  marketPriorWeight?: number;
 }
 
 export interface CalibrationBucket {
@@ -120,7 +126,11 @@ export async function runBacktest(options: BacktestOptions): Promise<BacktestSum
     : await prisma.modelVersion.findFirst({ where: { active: true } });
   if (!modelVersion) throw new Error('No active model version');
 
-  const config: ModelConfiguration = readModelConfiguration(modelVersion.configuration);
+  const stored: ModelConfiguration = readModelConfiguration(modelVersion.configuration);
+  const config: ModelConfiguration =
+    options.marketPriorWeight === undefined
+      ? stored
+      : { ...stored, marketPriorWeight: options.marketPriorWeight };
   const plan = buildWalkForwardPlan(options.from, options.to, folds);
 
   const backtest = await prisma.backtest.create({

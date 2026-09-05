@@ -97,6 +97,29 @@ export const GOAL_LINES = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5] as const;
 export const TEAM_GOAL_LINES = [0.5, 1.5, 2.5] as const;
 export const GOALS_PLUS_THRESHOLDS = [6, 7] as const;
 export const ASIAN_HANDICAP_LINES = [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2] as const;
+
+/** A whole-line handicap refunds the stake when the margin lands exactly on it. */
+export function handicapPushes(handicap: number): boolean {
+  return Number.isInteger(handicap);
+}
+
+/**
+ * Says what a handicap actually asks for.
+ *
+ * "Rodez -1" tells a reader nothing; "Rodez wins by 2+" tells them exactly what
+ * has to happen. Half-lines can be stated exactly in a few words. Whole lines
+ * cannot — they hand the stake back when the margin lands on the line — so they
+ * keep the number and are not offered on a coupon, where a one-line chip has no
+ * room to explain a refund.
+ */
+function handicapLabel(handicap: number): { labelKey: string } {
+  if (handicapPushes(handicap)) return { labelKey: 'selections.AH' };
+  if (handicap === -0.5) return { labelKey: 'selections.AH_WIN' };
+  if (handicap === 0.5) return { labelKey: 'selections.AH_NOT_LOSE' };
+  return handicap < 0
+    ? { labelKey: 'selections.AH_WIN_BY' }
+    : { labelKey: 'selections.AH_NOT_LOSE_BY' };
+}
 export const CORNER_LINES = [8.5, 9.5, 10.5, 11.5] as const;
 export const CARD_LINES = [2.5, 3.5, 4.5, 5.5] as const;
 const HTFT_OUTCOMES = ['1', 'X', '2'] as const;
@@ -258,10 +281,11 @@ export const MARKET_DEFINITIONS: MarketDefinition[] = [
       (['HOME', 'AWAY'] as const).map((side) => ({
         code: asianHandicapCode(side, handicap),
         name: `${side === 'HOME' ? 'Home' : 'Away'} ${handicap > 0 ? '+' : ''}${handicap}`,
-        labelKey: 'selections.AH',
+        ...handicapLabel(handicap),
         labelValues: {
           team: side === 'HOME' ? 'home' : 'away',
           handicap: `${handicap > 0 ? '+' : ''}${handicap}`,
+          margin: Math.ceil(Math.abs(handicap)),
         },
         parameters: { side, handicap },
       })),

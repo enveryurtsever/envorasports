@@ -66,6 +66,40 @@ describe('mapBetValue', () => {
     expect(mapBetValue(4, 'Away -0.75')).toBeNull();
   });
 
+  it('flips the away handicap, which the provider quotes from the home side', () => {
+    // Newcastle v Bournemouth, Bet365: "Away -1.5" was priced 1.26 and
+    // "Away +1.5" 6.40. Read literally that says the away team is odds-on to
+    // win by two and a longshot merely not to lose by two, which is backwards.
+    // The line is the home team's; backing away on "Away -1.5" receives +1.5.
+    expect(mapBetValue(4, 'Away -1.5')).toMatchObject({
+      selectionCode: 'AH_AWAY_P1_5',
+      handicap: 1.5,
+    });
+    expect(mapBetValue(4, 'Away +1.5')).toMatchObject({
+      selectionCode: 'AH_AWAY_M1_5',
+      handicap: -1.5,
+    });
+    // The home side is quoted directly and must not be flipped.
+    expect(mapBetValue(4, 'Home -1.5')).toMatchObject({ selectionCode: 'AH_HOME_M1_5' });
+  });
+
+  it('maps the two rows of one line to opposite sides', () => {
+    // Both rows of a line print the same number, because the number is the
+    // home team's. So "Home +1.5" and "Away +1.5" are the two sides of one
+    // market and must map to opposite codes — and their real prices, 1.12 and
+    // 6.40, sum to a ~5% book, which is what proves the reading is right. Under
+    // the literal reading they were 1.12 and 1.26: a 168% book no bookmaker
+    // would ever quote.
+    expect(mapBetValue(4, 'Home +1.5')?.selectionCode).toBe('AH_HOME_P1_5');
+    expect(mapBetValue(4, 'Away +1.5')?.selectionCode).toBe('AH_AWAY_M1_5');
+    expect(1 / 1.12 + 1 / 6.4).toBeLessThan(1.1);
+
+    // And the other line: home -1.5 at 3.70 against away -1.5 at 1.26.
+    expect(mapBetValue(4, 'Home -1.5')?.selectionCode).toBe('AH_HOME_M1_5');
+    expect(mapBetValue(4, 'Away -1.5')?.selectionCode).toBe('AH_AWAY_P1_5');
+    expect(1 / 3.7 + 1 / 1.26).toBeLessThan(1.1);
+  });
+
   it('accepts numeric values without throwing', () => {
     // "Exact Goals Number" reports 0, 1, 2 as JSON numbers. An unmodelled
     // market, but it must be skipped rather than crash the whole fixture.

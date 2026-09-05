@@ -195,17 +195,21 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     category: 'HIGH_VALUE',
     enabled: true,
     couponCount: 5,
-    minTotalOdds: 8,
+    // The point of this category is the long shot, so the floor is the target:
+    // a coupon that cannot reach 100.0 is not a Surprise, it is a Balanced one
+    // wearing the label. Reaching it takes five or six legs, which is why the
+    // selection range is wider here than elsewhere.
+    minTotalOdds: 100,
     maxTotalOdds: null,
-    minSelections: 2,
-    maxSelections: 6,
+    minSelections: 3,
+    maxSelections: 8,
     minConfidence: 0.35,
     // A long shot still has to beat the price, or it is a lottery ticket (§31).
     minExpectedValue: 0.08,
     minEdge: 0.04,
     // Backtest evidence, not taste: below ~0.25 the model's calibration error
-    // swamps its edge. High Value still reaches 8.0+ total odds because three
-    // legs at 0.25-0.35 multiply out well past it.
+    // swamps its edge. Every leg still clears that bar — the length comes from
+    // stacking honest legs, never from reaching for worse ones to pad the odds.
     minProbability: 0.25,
     maxRisk: 0.85,
     maxCorrelation: 0.5,

@@ -21,6 +21,7 @@ import {
   type SelectionRef,
 } from './correlation';
 import { buildSystemPlan, parseSystemSizes, SystemPlanError } from '@/lib/coupons/system-math';
+import { MARKET, findSelection, handicapPushes } from '@/lib/markets/registry';
 
 const log = createLogger('coupons:generator');
 
@@ -170,6 +171,11 @@ export function filterForCategory(
 
   return candidates.filter((candidate) => {
     if (allowed.size > 0 && !allowed.has(candidate.marketCode)) return false;
+    // A whole-line handicap refunds the stake when the margin lands exactly on
+    // the line. That rule does not fit on a coupon chip, and a selection a
+    // reader cannot read is not one to put in front of them. The half-lines say
+    // exactly what they mean ("wins by 2+") and carry the same markets.
+    if (isPushableHandicap(candidate)) return false;
     if (Number(candidate.probability) < settings.minProbability) return false;
     if (candidate.confidence < settings.minConfidence) return false;
     if (Number(candidate.expectedValue) < settings.minExpectedValue) return false;
@@ -178,6 +184,14 @@ export function filterForCategory(
     if (candidate.dataQuality < settings.minDataQuality) return false;
     return true;
   });
+}
+
+/** True for an ASIAN_HANDICAP selection on a whole line, which can push. */
+function isPushableHandicap(candidate: Candidate): boolean {
+  if (candidate.marketCode !== MARKET.ASIAN_HANDICAP) return false;
+  const definition = findSelection(candidate.marketCode, candidate.selectionCode);
+  const handicap = definition?.parameters?.handicap;
+  return typeof handicap === 'number' && handicapPushes(handicap);
 }
 
 function refOf(candidate: Candidate): SelectionRef {
