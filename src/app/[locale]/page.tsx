@@ -16,6 +16,7 @@ import { dateKeyToUtcMidnight, weekdayOfDateKey } from '@/lib/time/zoned';
 import { getNotableWins, getWeeklyStats } from '@/services/stats/weekly-stats';
 import { getFeaturedStandings, getMostPricedMatches } from '@/services/stats/standings';
 import { referenceStakeFor } from '@/lib/format/currency';
+import { cached } from '@/lib/cache/ttl-cache';
 import { MetricCard, PremiumCard, SectionHeading } from '@/components/ui/card';
 import { WeeklySummary } from '@/components/stats/weekly-summary';
 import { StandingsTable } from '@/components/stats/standings-table';
@@ -44,27 +45,40 @@ async function loadDashboard(viewer: Awaited<ReturnType<typeof getViewer>>) {
   const window = coverageWindow(activePublication, schedule);
   const week = bulletinWeek(today, schedule);
 
+  // Everything here is the same for every viewer and only changes when a job
+  // runs, so it is held for a minute rather than re-queried per request.
+  const TTL = 60_000;
   const [stats, standings, popular, upcoming, wins, marketCount, activeModel, openCoupons] =
     await Promise.all([
-      getWeeklyStats(),
-      getFeaturedStandings(),
-      getMostPricedMatches({ from: week.startUtc, to: week.endUtc }, 6),
-      prisma.match.findMany({
-        where: { scheduledKickoffUtc: { gte: new Date() } },
-        orderBy: { scheduledKickoffUtc: 'asc' },
-        take: 6,
-        select: {
-          id: true,
-          scheduledKickoffUtc: true,
-          homeTeam: { select: { name: true } },
-          awayTeam: { select: { name: true } },
-          league: { select: { name: true } },
-        },
-      }),
-      getNotableWins(),
-      prisma.bettingMarket.count({ where: { active: true } }),
-      prisma.modelVersion.findFirst({ where: { active: true } }),
-      prisma.coupon.count({ where: { resultStatus: 'PENDING' } }),
+      cached('home:weeklyStats', TTL, () => getWeeklyStats()),
+      cached('home:standings', TTL, () => getFeaturedStandings()),
+      cached(`home:popular:${week.startDate}`, TTL, () =>
+        getMostPricedMatches({ from: week.startUtc, to: week.endUtc }, 6),
+      ),
+      cached('home:upcoming', TTL, () =>
+        prisma.match.findMany({
+          where: { scheduledKickoffUtc: { gte: new Date() } },
+          orderBy: { scheduledKickoffUtc: 'asc' },
+          take: 6,
+          select: {
+            id: true,
+            scheduledKickoffUtc: true,
+            homeTeam: { select: { name: true } },
+            awayTeam: { select: { name: true } },
+            league: { select: { name: true } },
+          },
+        }),
+      ),
+      cached('home:wins', TTL, () => getNotableWins()),
+      cached('home:marketCount', 10 * TTL, () =>
+        prisma.bettingMarket.count({ where: { active: true } }),
+      ),
+      cached('home:activeModel', 10 * TTL, () =>
+        prisma.modelVersion.findFirst({ where: { active: true } }),
+      ),
+      cached('home:openCoupons', TTL, () =>
+        prisma.coupon.count({ where: { resultStatus: 'PENDING' } }),
+      ),
     ]);
 
   // The front page shows the best coupon from each category, entitlement-aware

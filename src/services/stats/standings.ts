@@ -229,6 +229,10 @@ export async function getMostPricedMatches(range: { from: Date; to: Date }, limi
       scheduledKickoffUtc: { gte: range.from, lt: range.to },
       odds: { some: {} },
     },
+    // Ordering and limiting in SQL rather than loading the week and sorting in
+    // memory: the price count is a correlated subquery per row.
+    orderBy: { odds: { _count: 'desc' } },
+    take: limit,
     select: {
       id: true,
       scheduledKickoffUtc: true,
@@ -242,10 +246,7 @@ export async function getMostPricedMatches(range: { from: Date; to: Date }, limi
     },
   });
 
-  return matches
-    .sort((a, b) => b._count.odds - a._count.odds)
-    .slice(0, limit)
-    .map((match) => ({
+  return matches.map((match) => ({
       id: match.id,
       kickoffUtc: match.scheduledKickoffUtc,
       status: match.status,
@@ -255,8 +256,8 @@ export async function getMostPricedMatches(range: { from: Date; to: Date }, limi
       country: match.league.country,
       homeScore: match.homeScore,
       awayScore: match.awayScore,
-      priceCount: match._count.odds,
-    }));
+    priceCount: match._count.odds,
+  }));
 }
 
 /**

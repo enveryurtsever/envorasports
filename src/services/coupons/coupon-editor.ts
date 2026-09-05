@@ -8,6 +8,7 @@ import { getAppSetting, getSystemSettings } from '@/lib/config/settings-service'
 import { couponCorrelation, loadCorrelationMatrix } from './correlation';
 import { buildSystemPlan } from '@/lib/coupons/system-math';
 import { parseSystemType } from '@/lib/math/combinatorics';
+import { invalidate } from '@/lib/cache/ttl-cache';
 
 const log = createLogger('coupons:editor');
 
@@ -202,6 +203,9 @@ export async function recalculateCoupon(couponId: string): Promise<CouponTotals>
     await rebuildSystemColumns(couponId);
   }
 
+  // An edited coupon must show its new totals immediately.
+  invalidate('home:');
+
   log.info('coupon recalculated', {
     couponId,
     selections: totals.selectionCount,
@@ -375,6 +379,7 @@ export async function deleteCoupon(couponId: string): Promise<void> {
 
   // Cascades to selections, the system coupon, its columns and their links.
   await prisma.coupon.delete({ where: { id: couponId } });
+  invalidate('home:');
   log.info('coupon deleted', { couponId });
 }
 
