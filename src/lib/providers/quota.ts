@@ -44,6 +44,16 @@ export function windowBounds(window: QuotaWindow, now = new Date()): { start: Da
  * With 100 requests/day on the football side, an accidental loop would burn a
  * whole day of data in seconds. This is the thing standing in the way.
  */
+/** How long a quota reading is trusted before probing again. */
+const STALE_READING_MS = 10 * 60 * 1000;
+/**
+ * Calls allowed through on a stale exhausted reading. Enough to clear the
+ * reserve so ordinary work resumes; small enough that being wrong costs little,
+ * and it costs nothing real either way — an exhausted provider answers 429
+ * without serving data, and that answer refreshes the reading immediately.
+ */
+const STALE_PROBE_ALLOWANCE = 30;
+
 export async function getQuotaState(policy: QuotaPolicy, now = new Date()): Promise<QuotaState> {
   const { start, end } = windowBounds(policy.window, now);
   // Sum credits, not rows: one Odds API call with 3 markets costs 3 credits.
@@ -70,14 +80,28 @@ export async function getQuotaState(policy: QuotaPolicy, now = new Date()): Prom
       quotaRemaining: { not: null },
     },
     orderBy: { createdAt: 'desc' },
-    select: { quotaRemaining: true },
+    select: { quotaRemaining: true, createdAt: true },
   });
 
   const reported = latest?.quotaRemaining ?? null;
-  const remaining =
+  let remaining =
     reported === null
       ? Math.max(0, policy.budget - counted)
       : Math.min(reported, policy.budget);
+
+  /**
+   * A reading of zero must not be permanent.
+   *
+   * The provider's window resets on its own schedule, not ours. Once it had, it
+   * was reporting 41 calls available while our newest stored reading still said
+   * zero — and nothing could refresh that reading, because refreshing it needs
+   * a call and the reading was blocking every call. One probe after the reading
+   * goes stale breaks the deadlock: if the provider really is exhausted it
+   * answers 429, costs nothing, and the stale reading is replaced by a fresh
+   * one that blocks again.
+   */
+  const readingAge = latest ? now.getTime() - latest.createdAt.getTime() : Number.POSITIVE_INFINITY;
+  if (remaining === 0 && readingAge > STALE_READING_MS) remaining = STALE_PROBE_ALLOWANCE;
 
   return {
     provider: policy.provider,

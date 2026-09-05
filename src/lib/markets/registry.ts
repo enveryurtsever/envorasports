@@ -104,6 +104,18 @@ export function handicapPushes(handicap: number): boolean {
 }
 
 /**
+ * True when a handicap is just the match result wearing a handicap's name.
+ *
+ * A -0.5 handicap wins exactly when the team wins by one or more, which is the
+ * plain 1X2 result. Carrying it as a second code means the same event can be
+ * described two ways, and "Fulham Kazanir" competes with "MS 1" for the same
+ * bet. MS is the one a reader knows, so the handicap form is not offered.
+ */
+export function handicapDuplicatesMatchResult(handicap: number): boolean {
+  return Math.abs(handicap) === 0.5;
+}
+
+/**
  * Says what a handicap actually asks for.
  *
  * "Rodez -1" tells a reader nothing; "Rodez wins by 2+" tells them exactly what

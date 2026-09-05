@@ -62,6 +62,15 @@ export function pollIntervalMinutes(
   return intervals.postMatchMinutes;
 }
 
+/** True when the call never reached the provider, so it proves nothing. */
+function isPreflightFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.name === 'QuotaExceededError' ||
+    /budget exhausted|do not have access|not available for your plan/i.test(error.message)
+  );
+}
+
 export function isDueForCheck(
   match: { scheduledKickoffUtc: Date; resultLastSyncedAt: Date | null; resultSyncAttempts: number },
   intervals: ResultSyncIntervals,
@@ -107,11 +116,18 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
       resultLastSyncedAt: true,
       resultSyncAttempts: true,
     },
-    orderBy: { scheduledKickoffUtc: 'asc' },
-    take: BATCH_SIZE * intervals.maxBatchesPerRun,
+    // Newest first. Ordered by earliest kickoff, a handful of week-old matches
+    // that never resolve fill the whole batch every run, and today's finished
+    // matches — the ones a settlement is actually waiting on — are never
+    // reached. The candidate set is drawn wider than the batch budget and
+    // trimmed after the due filter, so undue matches do not consume it either.
+    orderBy: { scheduledKickoffUtc: 'desc' },
+    take: BATCH_SIZE * intervals.maxBatchesPerRun * 5,
   });
 
-  const due = candidates.filter((match) => isDueForCheck(match, intervals, now));
+  const due = candidates
+    .filter((match) => isDueForCheck(match, intervals, now))
+    .slice(0, BATCH_SIZE * intervals.maxBatchesPerRun);
 
   const result: ResultSyncResult = {
     candidates: candidates.length,
@@ -138,10 +154,22 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
       // A provider failure must never mark predictions lost (§38). Record the
       // attempt and move on; the next tick retries.
       log.error('result batch failed', { error: String(error), size: batch.length });
-      await prisma.match.updateMany({
-        where: { id: { in: batch.map((m) => m.id) } },
-        data: { resultSyncAttempts: { increment: 1 }, resultLastSyncedAt: now },
-      });
+
+      /**
+       * Only a real answer counts as an attempt.
+       *
+       * A quota rejection or a plan restriction never reached the provider, so
+       * it says nothing about whether the match is resolvable. Counting those
+       * burned the whole attempt budget on matches that had simply never been
+       * asked about: a day of finished fixtures sat at 19 attempts against a
+       * limit of 12 and could no longer be settled at all.
+       */
+      if (!isPreflightFailure(error)) {
+        await prisma.match.updateMany({
+          where: { id: { in: batch.map((m) => m.id) } },
+          data: { resultSyncAttempts: { increment: 1 }, resultLastSyncedAt: now },
+        });
+      }
       continue;
     }
 

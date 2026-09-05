@@ -21,7 +21,12 @@ import {
   type SelectionRef,
 } from './correlation';
 import { buildSystemPlan, parseSystemSizes, SystemPlanError } from '@/lib/coupons/system-math';
-import { MARKET, findSelection, handicapPushes } from '@/lib/markets/registry';
+import {
+  MARKET,
+  findSelection,
+  handicapDuplicatesMatchResult,
+  handicapPushes,
+} from '@/lib/markets/registry';
 
 const log = createLogger('coupons:generator');
 
@@ -104,7 +109,14 @@ export async function loadCandidates(
   const predictions = await prisma.prediction.findMany({
     where: {
       modelVersionId,
-      recommended: true,
+      /**
+       * Deliberately not filtered on `recommended`. That flag is one global
+       * "worth backing" bar, and it requires positive edge — which a 92%
+       * favourite priced at 1.05 never has, so exactly the legs a Banko is made
+       * of were being filtered out before any category could see them. Each
+       * category carries its own minEdge and minExpectedValue, and
+       * filterForCategory applies them; that is the gate.
+       */
       status: 'PENDING',
       predictionTimestamp: { lte: asOf },
       match: {
@@ -171,11 +183,7 @@ export function filterForCategory(
 
   return candidates.filter((candidate) => {
     if (allowed.size > 0 && !allowed.has(candidate.marketCode)) return false;
-    // A whole-line handicap refunds the stake when the margin lands exactly on
-    // the line. That rule does not fit on a coupon chip, and a selection a
-    // reader cannot read is not one to put in front of them. The half-lines say
-    // exactly what they mean ("wins by 2+") and carry the same markets.
-    if (isPushableHandicap(candidate)) return false;
+    if (isUnofferableHandicap(candidate)) return false;
     if (Number(candidate.probability) < settings.minProbability) return false;
     if (candidate.confidence < settings.minConfidence) return false;
     if (Number(candidate.expectedValue) < settings.minExpectedValue) return false;
@@ -186,12 +194,17 @@ export function filterForCategory(
   });
 }
 
-/** True for an ASIAN_HANDICAP selection on a whole line, which can push. */
-function isPushableHandicap(candidate: Candidate): boolean {
+/**
+ * Handicaps not offered on a coupon: whole lines, which refund on an exact
+ * margin and cannot say so in a chip, and +/-0.5, which is the match result
+ * under another name.
+ */
+function isUnofferableHandicap(candidate: Candidate): boolean {
   if (candidate.marketCode !== MARKET.ASIAN_HANDICAP) return false;
   const definition = findSelection(candidate.marketCode, candidate.selectionCode);
   const handicap = definition?.parameters?.handicap;
-  return typeof handicap === 'number' && handicapPushes(handicap);
+  if (typeof handicap !== 'number') return false;
+  return handicapPushes(handicap) || handicapDuplicatesMatchResult(handicap);
 }
 
 function refOf(candidate: Candidate): SelectionRef {

@@ -158,20 +158,28 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     category: 'HIGH_CONFIDENCE',
     enabled: true,
     couponCount: 5,
-    minTotalOdds: 1.12,
-    // A 2-leg coupon whose legs must also carry positive edge lands around
-    // 2.4-3.5; a 2.5 ceiling made the category unfillable in practice.
+    minTotalOdds: 1.10,
     maxTotalOdds: 4,
     minSelections: 2,
-    maxSelections: 4,
+    maxSelections: 3,
     minConfidence: 0.7,
-    minExpectedValue: 0.02,
-    minEdge: 0.02,
-    minProbability: 0.65,
+    // A Banko is heavy favourites at short prices. Demanding edge on top of
+    // that is what emptied the category: the market prices a 92% shot keenly,
+    // so the most likely legs carry almost none. Zero is the floor — we still
+    // never back a selection the market rates above our own model.
+    minExpectedValue: 0,
+    minEdge: 0,
+    minProbability: 0.6,
     maxRisk: 0.4,
     maxCorrelation: 0.3,
     minDataQuality: 0.6,
-    minCombinedProbability: 0.85,
+    /**
+     * 0.85 is the target, but it needs two legs near 92% and the priced pool
+     * tops out at 81% — one selection in sixty-seven clears 80%. Raise this
+     * once the bulletin carries short-priced favourites (Over 0.5, double
+     * chance on a heavy favourite); until then it would empty the category.
+     */
+    minCombinedProbability: 0.55,
     oneSelectionPerMatch: true,
     allowedMarkets: [
       MARKET.DOUBLE_CHANCE,
@@ -197,7 +205,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     maxRisk: 0.6,
     maxCorrelation: 0.4,
     minDataQuality: 0.5,
-    minCombinedProbability: 0.55,
+    minCombinedProbability: 0.35,
     oneSelectionPerMatch: true,
     allowedMarkets: [],
   },

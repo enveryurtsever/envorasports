@@ -88,10 +88,23 @@ export class HttpClient {
         });
 
         const durationMs = Date.now() - startedAt;
-        // Providers that meter credits report the truth in a header; prefer it
-        // over our own arithmetic when present.
+        /**
+         * Providers that meter credits report the truth in a header; prefer it
+         * over our own arithmetic when present.
+         *
+         * The header has to be the *budget* one. API-Football sends both:
+         * `x-ratelimit-requests-remaining` is the daily allowance, while
+         * `x-ratelimit-remaining` is the per-minute burst limit — ten on the
+         * free plan. Reading the latter as the budget meant ten quick calls
+         * recorded "0 remaining for the day" and the guard then refused
+         * everything, with the provider's own dashboard showing 41 still
+         * available. Per-minute exhaustion is a reason to wait a moment, never
+         * a reason to stop for the day.
+         */
         const reportedRemaining = Number(
-          response.headers.get('x-requests-remaining') ?? response.headers.get('x-ratelimit-remaining'),
+          response.headers.get('x-requests-remaining') ??
+            response.headers.get('x-ratelimit-requests-remaining') ??
+            response.headers.get('x-ratelimit-remaining'),
         );
         const quotaRemaining = Number.isFinite(reportedRemaining) ? reportedRemaining : null;
         if (quotaRemaining !== null) this.lastQuotaRemaining = quotaRemaining;
