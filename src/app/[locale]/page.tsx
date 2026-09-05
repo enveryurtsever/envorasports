@@ -21,6 +21,9 @@ import { WeeklySummary } from '@/components/stats/weekly-summary';
 import { StandingsTable } from '@/components/stats/standings-table';
 import { StandingsTabs } from '@/components/stats/standings-tabs';
 import { PopularMatches } from '@/components/stats/popular-matches';
+import { CouponCard } from '@/components/predictions/coupon-card';
+import { getCategoryView, getFreePreviewPolicy } from '@/services/coupons/coupon-access';
+import { COUPON_CATEGORIES } from '@/lib/config/coupon-settings';
 
 /**
  * Dashboard (§46).
@@ -32,7 +35,7 @@ import { PopularMatches } from '@/components/stats/popular-matches';
 
 export const dynamic = 'force-dynamic';
 
-async function loadDashboard() {
+async function loadDashboard(viewer: Awaited<ReturnType<typeof getViewer>>) {
   const schedule = await getBulletinSchedule();
   const today = todayInSchedule(schedule);
 
@@ -64,11 +67,30 @@ async function loadDashboard() {
       prisma.coupon.count({ where: { resultStatus: 'PENDING' } }),
     ]);
 
+  // The front page shows the best coupon from each category, entitlement-aware
+  // exactly as /predictions is — a visitor sees the free preview, nothing more.
+  const policy = await getFreePreviewPolicy();
+  const range = {
+    from: dateKeyToUtcMidnight(week.startDate),
+    to: dateKeyToUtcMidnight(week.endDate),
+  };
+  const views = await Promise.all(
+    COUPON_CATEGORIES.filter((c) => c !== 'COMBINATION_SYSTEM').map((category) =>
+      getCategoryView(viewer, category, range, policy),
+    ),
+  );
+  const featuredCoupons = views
+    .flatMap((view) => view.coupons.slice(0, 1).map((coupon) => ({ coupon, view })))
+    .slice(0, 3);
+  const totalCoupons = views.reduce((sum, v) => sum + v.coupons.length + (v.hidden?.count ?? 0), 0);
+
   return {
     schedule,
     today,
     window,
     week,
+    featuredCoupons,
+    totalCoupons,
     isPublicationToday: isPublicationDay(today, schedule),
     nextPublication: nextPublicationDate(today, schedule),
     stats,
@@ -92,11 +114,12 @@ export default async function DashboardPage({ params }: { params: Promise<{ loca
   const tw = await getTranslations('weekly');
   const tn = await getTranslations('nav');
   const tCat = await getTranslations('categories');
+  const tp = await getTranslations('predictions');
   const tDisc = await getTranslations('disclaimer');
   const format = await getFormatter();
 
   const viewer = await getViewer();
-  const data = await loadDashboard();
+  const data = await loadDashboard(viewer);
   const stake = referenceStakeFor(locale);
 
   const dayLabel = (key: string) =>
@@ -232,6 +255,43 @@ export default async function DashboardPage({ params }: { params: Promise<{ loca
           </PremiumCard>
         ))}
       </section>
+
+      {/* Today's predictions, straight from the database. */}
+      {data.featuredCoupons.length > 0 ? (
+        <section>
+          <SectionHeading
+            title={tn('predictions')}
+            description={tp('subtitle')}
+            action={
+              <Link href="/predictions" className="text-sm font-medium text-emerald-bright hover:underline">
+                {tc('more')} →
+              </Link>
+            }
+          />
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {data.featuredCoupons.map(({ coupon, view }) => (
+              <CouponCard
+                key={coupon.id}
+                coupon={coupon}
+                isPreview={view.access === 'preview'}
+              />
+            ))}
+          </div>
+        </section>
+      ) : data.totalCoupons > 0 ? (
+        <section>
+          <SectionHeading title={tn('predictions')} />
+          <PremiumCard accent="gold" className="text-center">
+            <p className="text-sm text-muted">{tp('count', { count: data.totalCoupons })}</p>
+            <Link
+              href="/pricing"
+              className="mt-3 inline-block rounded-lg bg-gold px-4 py-2 text-sm font-semibold text-ink"
+            >
+              {tn('pricing')}
+            </Link>
+          </PremiumCard>
+        </section>
+      ) : null}
 
       <WeeklySummary stats={data.stats} />
 

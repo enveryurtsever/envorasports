@@ -20,6 +20,7 @@ export interface NarrationJobResult {
   generated: number;
   fromTemplate: number;
   callsMade: number;
+  coupons: number;
 }
 
 export async function narrateWindow(
@@ -64,7 +65,84 @@ export async function narrateWindow(
     generated: 0,
     fromTemplate: 0,
     callsMade: 0,
+    coupons: 0,
   };
+
+  // Coupons first: their analyses are what the reader opens from the card, so
+  // they are the ones worth having in the cache before anyone asks.
+  const coupons = await prisma.coupon.findMany({
+    where: { targetDate: { gte: window.startUtc, lte: window.endUtc }, resultStatus: 'PENDING' },
+    select: {
+      id: true,
+      reference: true,
+      category: true,
+      totalOdds: true,
+      estimatedProbability: true,
+      expectedValue: true,
+      confidenceScore: true,
+      riskScore: true,
+      selections: {
+        orderBy: { sortOrder: 'asc' },
+        select: {
+          marketCode: true,
+          selectionCode: true,
+          odds: true,
+          probability: true,
+          impliedProbability: true,
+          edge: true,
+          match: {
+            select: {
+              homeTeam: { select: { name: true } },
+              awayTeam: { select: { name: true } },
+              league: { select: { name: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  for (const coupon of coupons) {
+    if (result.callsMade >= maxPerRun) break;
+
+    const payload = {
+      reference: coupon.reference,
+      category: coupon.category,
+      totalOdds: Number(coupon.totalOdds),
+      estimatedProbability: Number(coupon.estimatedProbability),
+      expectedValue: Number(coupon.expectedValue),
+      confidence: Number(coupon.confidenceScore),
+      risk: Number(coupon.riskScore),
+      selections: coupon.selections.map((s) => ({
+        match: `${s.match.homeTeam.name} - ${s.match.awayTeam.name}`,
+        league: s.match.league.name,
+        market: s.marketCode,
+        selection: s.selectionCode,
+        odds: Number(s.odds),
+        probability: Number(s.probability),
+        impliedProbability: Number(s.impliedProbability),
+        edge: Number(s.edge),
+      })),
+    };
+
+    for (const locale of locales) {
+      if (result.callsMade >= maxPerRun) break;
+
+      const outcome = await narrate(
+        { entityType: 'coupon', entityId: coupon.id, locale, payload },
+        { allowGeneration: true },
+      );
+
+      if (outcome.source === 'model') result.generated++;
+      else result.fromTemplate++;
+
+      result.callsMade++;
+      result.coupons++;
+      if (result.callsMade < maxPerRun) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
 
   for (const match of matches) {
     if (result.callsMade >= maxPerRun) break;
@@ -94,12 +172,10 @@ export async function narrateWindow(
     for (const locale of locales) {
       if (result.callsMade >= maxPerRun) break;
 
-      const outcome = await narrate({
-        entityType: 'match',
-        entityId: match.id,
-        locale,
-        payload,
-      });
+      const outcome = await narrate(
+        { entityType: 'match', entityId: match.id, locale, payload },
+        { allowGeneration: true },
+      );
 
       if (outcome.source === 'model') result.generated++;
       else result.fromTemplate++;

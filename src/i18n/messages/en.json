@@ -7,9 +7,9 @@
   "nav": {
     "dashboard": "Dashboard",
     "predictions": "Today's Predictions",
-    "highConfidence": "High Confidence",
-    "balancedPicks": "Balanced Picks",
-    "highValue": "High Value",
+    "highConfidence": "Banker",
+    "balancedPicks": "Balanced",
+    "highValue": "Surprise",
     "systems": "Combination Systems",
     "matches": "Matches",
     "analysis": "Match Analysis",

@@ -89,8 +89,10 @@ const JOBS: ScheduledJob[] = [
     run: () => runSettlementSweep(),
   },
   {
+    // Cheap when everything is already cached, so it can run often: a fresh
+    // publication gets its analyses written well before anyone opens a card.
     name: 'narrate-analyses',
-    everyMs: 12 * 60 * MINUTE,
+    everyMs: 60 * MINUTE,
     run: () => runNarration(),
   },
   {

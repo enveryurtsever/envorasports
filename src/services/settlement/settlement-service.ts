@@ -6,6 +6,7 @@ import { settleSelection } from '@/lib/settlement/evaluators';
 import type { MatchResultInput, SettlementOutcome } from '@/lib/settlement/types';
 import { Decimal, dec, toMoney, toOdds } from '@/lib/math/decimal';
 import { settleSystem, type ColumnResult } from '@/lib/coupons/system-math';
+import { invalidateStandingsCache } from '@/services/stats/standings';
 
 const log = createLogger('settlement');
 
@@ -326,6 +327,9 @@ export async function runSettlement(finishedMatchIds: string[]): Promise<Settlem
 
   const coupons = await settleCoupons();
   const systems = await settleSystemCoupons();
+
+  // Results have moved, so the cached tables are out of date.
+  invalidateStandingsCache();
 
   return {
     predictionsSettled,

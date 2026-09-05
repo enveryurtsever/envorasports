@@ -44,6 +44,18 @@ export interface NarrationResult {
   reason?: string;
 }
 
+export interface NarrateOptions {
+  /**
+   * Whether this call may reach the model.
+   *
+   * Page renders pass false and are served from the cache alone. Generating on
+   * render made /predictions take ~6 seconds: every coupon called out, hit the
+   * free tier's rate limit, retried with backoff and fell back to the template
+   * anyway. Only the background job generates.
+   */
+  allowGeneration?: boolean;
+}
+
 const SYSTEM_RULES = `You are the analysis writer for EnvoraSports, a football prediction platform.
 
 ABSOLUTE RULES
@@ -213,7 +225,10 @@ function checksumOf(payload: unknown): string {
  * Produces a narration, cached against a checksum of its inputs so identical
  * facts are never paid for twice.
  */
-export async function narrate(input: NarrationRequest): Promise<NarrationResult> {
+export async function narrate(
+  input: NarrationRequest,
+  options: NarrateOptions = {},
+): Promise<NarrationResult> {
   // Everything downstream — prompt, grounding check, cache key — uses the
   // rounded payload, so they can never disagree about what a figure is.
   const request: NarrationRequest = {
@@ -235,6 +250,12 @@ export async function narrate(input: NarrationRequest): Promise<NarrationResult>
     } catch {
       // A corrupt cache entry is simply ignored and rewritten below.
     }
+  }
+
+  // Cache miss on a render path: answer immediately with the template rather
+  // than making the reader wait on a network call.
+  if (!options.allowGeneration) {
+    return { narration: templateNarration(request), source: 'template', reason: 'cache_miss' };
   }
 
   const env = serverEnv();

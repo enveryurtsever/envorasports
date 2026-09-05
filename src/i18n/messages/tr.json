@@ -7,9 +7,9 @@
   "nav": {
     "dashboard": "Panel",
     "predictions": "Günün Tahminleri",
-    "highConfidence": "Yüksek Güven",
-    "balancedPicks": "Dengeli Seçimler",
-    "highValue": "Yüksek Değer",
+    "highConfidence": "Banko",
+    "balancedPicks": "Dengeli",
+    "highValue": "Sürpriz",
     "systems": "Kombinasyon Sistemleri",
     "matches": "Maçlar",
     "analysis": "Maç Analizi",

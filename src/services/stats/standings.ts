@@ -36,10 +36,43 @@ export interface LeagueStandings {
 const FORM_LENGTH = 5;
 
 /**
+ * League tables only change when a result lands, but computing one reads a
+ * season of matches. Recomputing six of them on every front-page request cost
+ * more than the rest of the page put together, so they are held briefly in
+ * process. A stale table for a minute is invisible; a slow front page is not.
+ */
+const STANDINGS_TTL_MS = 60_000;
+const standingsCache = new Map<string, { at: number; value: LeagueStandings | null }>();
+
+function cached(leagueId: string): LeagueStandings | null | undefined {
+  const entry = standingsCache.get(leagueId);
+  if (!entry) return undefined;
+  if (Date.now() - entry.at > STANDINGS_TTL_MS) {
+    standingsCache.delete(leagueId);
+    return undefined;
+  }
+  return entry.value;
+}
+
+/** Drops the cache so a settlement run is reflected immediately. */
+export function invalidateStandingsCache(): void {
+  standingsCache.clear();
+}
+
+/**
  * Three points for a win. Real competitions add deductions and tie-break rules
  * we do not model, so this is a computed table, not an official one.
  */
 export async function getLeagueStandings(leagueId: string): Promise<LeagueStandings | null> {
+  const hit = cached(leagueId);
+  if (hit !== undefined) return hit;
+
+  const value = await computeLeagueStandings(leagueId);
+  standingsCache.set(leagueId, { at: Date.now(), value });
+  return value;
+}
+
+async function computeLeagueStandings(leagueId: string): Promise<LeagueStandings | null> {
   const league = await prisma.league.findUnique({
     where: { id: leagueId },
     select: { id: true, name: true, country: true },

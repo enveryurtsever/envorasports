@@ -54,7 +54,14 @@ export function Modal({
           // Clicking the backdrop closes; clicking the panel does not.
           if (event.target === ref.current) setOpen(false);
         }}
-        className="w-[min(44rem,92vw)] rounded-[--radius-card] border border-white/15 bg-navy-dark p-0 text-paper backdrop:bg-black/70 backdrop:backdrop-blur-sm"
+        /*
+         * `m-auto` is load-bearing. The UA stylesheet centres a modal dialog
+         * with `position: fixed; inset: 0; margin: auto`, but Tailwind's
+         * preflight resets margin to 0 on every element — which pins the dialog
+         * to the top-left corner. Restoring the auto margin puts it back in the
+         * middle of the viewport.
+         */
+        className="fixed inset-0 m-auto h-fit max-h-[85vh] w-[min(44rem,92vw)] rounded-[--radius-card] border border-white/15 bg-navy-dark p-0 text-paper backdrop:bg-black/70 backdrop:backdrop-blur-sm"
       >
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
           <h2 className="text-sm font-semibold">{title}</h2>
