@@ -21,6 +21,9 @@ async function main() {
         maxRisk: new Prisma.Decimal(d.maxRisk),
         minDataQuality: new Prisma.Decimal(d.minDataQuality),
         minCombinedProbability: new Prisma.Decimal(d.minCombinedProbability),
+        maxCorrelation: new Prisma.Decimal(d.maxCorrelation),
+        allowedMarkets: d.allowedMarkets,
+        oneSelectionPerMatch: d.oneSelectionPerMatch,
       },
     });
   }

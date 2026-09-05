@@ -386,12 +386,20 @@ export function buildCategoryCoupons(
   const usedMatches = new Set<string>();
   const usedMarkets = new Set<string>();
 
-  // Spread the requested count across the match days in the window.
-  const perGroup = Math.max(1, Math.ceil(settings.couponCount / Math.max(1, groupKeys.length)));
+  /**
+   * Spread the requested count across the match days that actually have
+   * candidates.
+   *
+   * Dividing by every day in the window caps a category at ceil(count/days)
+   * even when only one day has fixtures — five coupons over a four-day window
+   * became two, every time, and the shortfall was reported as a thin candidate
+   * pool rather than as the arithmetic it was.
+   */
+  const activeKeys = groupKeys.filter((key) => pool.some((c) => c.targetDate === key));
+  const perGroup = Math.max(1, Math.ceil(settings.couponCount / Math.max(1, activeKeys.length)));
 
-  for (const groupKey of groupKeys) {
+  for (const groupKey of activeKeys) {
     const groupPool = pool.filter((c) => c.targetDate === groupKey);
-    if (groupPool.length === 0) continue;
 
     // Six strategies over a small pool converge on the same few legs, which is
     // why a category asked for five and produced two. Once they are exhausted
@@ -424,6 +432,37 @@ export function buildCategoryCoupons(
         usedMatches.add(s.matchId);
         usedMarkets.add(s.marketCode);
       });
+    }
+  }
+
+  // Any day may fill what the per-day share left over, so the count is only
+  // ever short because the candidates genuinely were not there.
+  if (coupons.length < settings.couponCount) {
+    for (const groupKey of activeKeys) {
+      if (coupons.length >= settings.couponCount) break;
+      const groupPool = pool.filter((c) => c.targetDate === groupKey);
+
+      for (let attempt = 0; attempt < STRATEGIES.length * 5; attempt++) {
+        if (coupons.length >= settings.couponCount) break;
+
+        const coupon = buildCoupon(
+          groupPool,
+          settings,
+          matrix,
+          STRATEGIES[attempt % STRATEGIES.length]!,
+          usedMatches,
+          usedMarkets,
+          weights,
+          Math.floor(attempt / STRATEGIES.length),
+        );
+        if (!coupon || !isDistinct(coupon, coupons)) continue;
+
+        coupons.push(coupon);
+        coupon.selections.forEach((s) => {
+          usedMatches.add(s.matchId);
+          usedMarkets.add(s.marketCode);
+        });
+      }
     }
   }
 
@@ -749,12 +788,27 @@ async function generateSystemCoupons(
 
   let produced = 0;
 
+  /**
+   * One base set per day gave one system per day, so a slate of three needed
+   * three separate match days and quietly produced one. Each pass starts
+   * further down the ranking instead, which yields a genuinely different base
+   * set out of the same day's candidates.
+   */
+  const attemptsPerDay = Math.max(1, system.couponCount);
+
   for (const groupKey of groupKeys) {
     if (produced >= system.couponCount) break;
 
-    const groupPool = pool
+    const dayPool = pool
       .filter((c) => c.targetDate === groupKey)
       .sort((a, b) => Number(b.expectedValue) - Number(a.expectedValue));
+
+    for (let pass = 0; pass < attemptsPerDay; pass++) {
+    if (produced >= system.couponCount) break;
+
+    // Each pass drops the previous pass's strongest leg, so the sets overlap
+    // without repeating. Legs may be shared between systems; a whole set is not.
+    const groupPool = pass === 0 ? dayPool : dayPool.slice(pass);
 
     const base: Candidate[] = [];
     const usedMatches = new Set<string>();
@@ -912,6 +966,7 @@ async function generateSystemCoupons(
     }
 
     produced++;
+    }
   }
 
   outcome.produced = produced;

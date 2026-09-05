@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db/prisma';
 import { createLogger } from '@/lib/logging/logger';
+import { modelHistoryStart } from '@/lib/models/history-window';
 
 const log = createLogger('features:elo');
 
@@ -87,6 +88,10 @@ export async function rebuildEloRatings(
   options: { leagueId?: string; since?: Date; config?: EloConfig } = {},
 ): Promise<RebuildResult> {
   const config = options.config ?? DEFAULT_ELO_CONFIG;
+  // Default to the season window: ratings built from four-year-old squads
+  // describe teams that no longer exist. An explicit `since` still wins, which
+  // is what the backtest passes when it wants the full archive.
+  const since = options.since ?? modelHistoryStart(new Date());
 
   const matches = await prisma.match.findMany({
     where: {
@@ -94,7 +99,7 @@ export async function rebuildEloRatings(
       homeScore: { not: null },
       awayScore: { not: null },
       ...(options.leagueId ? { leagueId: options.leagueId } : {}),
-      ...(options.since ? { scheduledKickoffUtc: { gte: options.since } } : {}),
+      scheduledKickoffUtc: { gte: since },
     },
     orderBy: { scheduledKickoffUtc: 'asc' },
     select: {

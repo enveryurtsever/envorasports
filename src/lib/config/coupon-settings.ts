@@ -229,7 +229,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     maxTotalOdds: 4,
     minSelections: 2,
     maxSelections: 3,
-    minConfidence: 0.7,
+    minConfidence: 0.6,
     // A Banko is heavy favourites at short prices. Demanding edge on top of
     // that is what emptied the category: the market prices a 92% shot keenly,
     // so the most likely legs carry almost none. Zero is the floor — we still
@@ -248,12 +248,20 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
      */
     minCombinedProbability: 0.55,
     oneSelectionPerMatch: true,
+    /**
+     * The safe end of the bulletin. Asian handicap earns its place here now
+     * that only the half-lines are offered: "+1.5" is one of the most reliable
+     * selections there is, and excluding the market cost the category two
+     * thirds of its candidates. Half-time and 6+ goals stay out — a Banko is
+     * not built on a coin-flip half or a five-percent event.
+     */
     allowedMarkets: [
       MARKET.DOUBLE_CHANCE,
       MARKET.OVER_UNDER,
       MARKET.MATCH_RESULT,
       MARKET.BTTS,
       MARKET.TEAM_TOTAL,
+      MARKET.ASIAN_HANDICAP,
     ],
   },
   BALANCED_PICKS: {
@@ -346,7 +354,7 @@ export const DEFAULT_SYSTEM_SETTINGS: SystemCouponSettings = {
   minExpectedValue: 0.02,
   maxCorrelation: 0.35,
   oneSelectionPerMatch: true,
-  couponCount: 2,
+  couponCount: 3,
 };
 
 /** Weights for the coupon score (§34). No magic numbers in the services. */

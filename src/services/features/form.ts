@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db/prisma';
+import { modelHistoryStart } from '@/lib/models/history-window';
 
 /**
  * Team form (§13).
@@ -96,7 +97,8 @@ export async function loadRecentMatches(
       homeScore: { not: null },
       awayScore: { not: null },
       // Strictly before the cutoff: the match being predicted is excluded.
-      scheduledKickoffUtc: { lt: asOf },
+      // Bounded below too — a side's form two seasons ago is a different side.
+      scheduledKickoffUtc: { lt: asOf, gte: modelHistoryStart(asOf) },
       OR: [{ homeTeamId: teamId }, { awayTeamId: teamId }],
       ...(seasonId ? { seasonId } : {}),
     },
@@ -288,7 +290,9 @@ export async function getLeagueAverages(
       status: { in: ['FINISHED', 'AWARDED'] },
       homeScore: { not: null },
       awayScore: { not: null },
-      scheduledKickoffUtc: { lt: asOf },
+      // Scoring rates drift between seasons; the baseline every attack and
+      // defence strength is measured against has to be the current one.
+      scheduledKickoffUtc: { lt: asOf, gte: modelHistoryStart(asOf) },
     },
     orderBy: { scheduledKickoffUtc: 'desc' },
     take: 400,
