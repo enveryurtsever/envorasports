@@ -28,8 +28,17 @@ const serverSchema = z.object({
    * It is never allowed to produce a probability, a price or a reason (§48).
    */
   NARRATION_PROVIDER: z.enum(['gemini', 'none']).default('none'),
+  /** Bet365 (8) prices the widest set of markets on the free plan. */
+  FOOTBALL_ODDS_BOOKMAKER_ID: z.coerce.number().int().positive().default(8),
   GEMINI_API_KEY: z.string().default(''),
   GEMINI_MODEL: z.string().default('gemini-3.6-flash'),
+  /**
+   * Tried in order when the primary's free-tier daily quota is spent. The quota
+   * is per model, so each name here adds its own daily allowance.
+   */
+  GEMINI_FALLBACK_MODELS: z
+    .string()
+    .default('gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-lite-latest'),
 
   BILLING_PROVIDER: z.enum(['stripe', 'none']).default('none'),
   STRIPE_SECRET_KEY: z.string().default(''),
@@ -41,7 +50,7 @@ const serverSchema = z.object({
 
 const clientSchema = z.object({
   NEXT_PUBLIC_APP_URL: z.string().url().default('http://localhost:6247'),
-  NEXT_PUBLIC_DEFAULT_LOCALE: z.enum(['en', 'tr']).default('en'),
+  NEXT_PUBLIC_DEFAULT_LOCALE: z.enum(['tr', 'en']).default('tr'),
   NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: z.string().default(''),
 });
 

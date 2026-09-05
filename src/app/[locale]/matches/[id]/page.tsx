@@ -5,6 +5,7 @@ import { getMatchAnalysis } from '@/services/predictions/match-analysis';
 import { Link } from '@/i18n/navigation';
 import { EmptyState, MetricCard, PremiumCard, SectionHeading } from '@/components/ui/card';
 import { SelectionLabel } from '@/components/predictions/selection-label';
+import { METRIC_TOKENS, signedTone } from '@/lib/format/metric-tokens';
 import { FactorBars } from '@/components/predictions/factor-bars';
 import { AiAnalysis } from '@/components/predictions/ai-analysis';
 
@@ -122,22 +123,18 @@ export default async function MatchDetailPage({
                             awayTeam={match.awayTeam}
                           />
                         </td>
-                        <td className="tabular px-4 py-2 text-right font-semibold">
+                        <td className={`tabular px-4 py-2 text-right font-semibold ${METRIC_TOKENS.modelProbability.text}`}>
                           {format.number(row.probability, 'percent')}
                         </td>
-                        <td className="tabular px-4 py-2 text-right text-muted">
+                        <td className={`tabular px-4 py-2 text-right ${METRIC_TOKENS.marketProbability.text}`}>
                           {row.impliedProbability === null
                             ? '—'
                             : format.number(row.impliedProbability, 'percent')}
                         </td>
-                        <td className="tabular px-4 py-2 text-right">
+                        <td className={`tabular px-4 py-2 text-right ${METRIC_TOKENS.odds.text}`}>
                           {row.odds === null ? '—' : format.number(row.odds, 'odds')}
                         </td>
-                        <td
-                          className={`tabular px-4 py-2 text-right ${
-                            (row.edge ?? 0) > 0 ? 'text-emerald-bright' : 'text-muted'
-                          }`}
-                        >
+                        <td className={`tabular px-4 py-2 text-right ${signedTone('edge', row.edge ?? 0)}`}>
                           {row.edge === null ? '—' : format.number(row.edge, 'signedPercent')}
                         </td>
                       </tr>
@@ -213,10 +210,10 @@ export default async function MatchDetailPage({
                           awayTeam={match.awayTeam}
                         />
                       </span>
-                      <span className="tabular text-sm">
+                      <span className={`tabular text-sm ${METRIC_TOKENS.odds.text}`}>
                         {selection.odds === null ? '—' : format.number(selection.odds, 'odds')}
                       </span>
-                      <span className="tabular text-sm text-emerald-bright">
+                      <span className={`tabular text-sm ${signedTone('edge', selection.edge ?? 0)}`}>
                         {selection.edge === null
                           ? '—'
                           : format.number(selection.edge, 'signedPercent')}

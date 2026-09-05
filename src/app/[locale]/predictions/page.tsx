@@ -31,9 +31,10 @@ export default async function PredictionsPage({
   };
 
   const policy = await getFreePreviewPolicy();
-  const categories = COUPON_CATEGORIES.filter((c) => c !== 'COMBINATION_SYSTEM');
+  // Systems are shown alongside the straight coupons rather than on their own
+  // page: they are part of the same week's slate, not a separate product.
   const views = await Promise.all(
-    categories.map((category) => getCategoryView(viewer, category, range, policy)),
+    COUPON_CATEGORIES.map((category) => getCategoryView(viewer, category, range, policy)),
   );
 
   return (
@@ -43,7 +44,9 @@ export default async function PredictionsPage({
         <p className="mt-2 max-w-2xl text-sm text-muted">{t('subtitle')}</p>
       </header>
 
-      {views.map((view) => (
+      {views
+        .filter((view) => view.coupons.length > 0 || (view.hidden?.count ?? 0) > 0)
+        .map((view) => (
         <section key={view.category} className="space-y-4">
           <SectionHeading
             title={tCat(`${view.category}.name`)}
@@ -66,11 +69,12 @@ export default async function PredictionsPage({
             />
           ) : null}
 
-          {view.coupons.length === 0 && (!view.hidden || view.hidden.count === 0) ? (
-            <EmptyState title={t('noneForCategory')} hint={t('noneForCategoryHint')} />
-          ) : null}
         </section>
       ))}
+
+      {views.every((view) => view.coupons.length === 0 && (view.hidden?.count ?? 0) === 0) ? (
+        <EmptyState title={t('noneThisWeek')} hint={t('noneThisWeekHint')} />
+      ) : null}
     </div>
   );
 }

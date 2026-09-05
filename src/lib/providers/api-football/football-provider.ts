@@ -1,4 +1,5 @@
 import { createApiFootballClient, API_FOOTBALL } from './client';
+import { createLogger } from '@/lib/logging/logger';
 import type { QuotaPolicy } from '../quota';
 import type {
   FootballDataProvider,
@@ -197,6 +198,18 @@ function mapTeamStatistics(entry: RawStatisticsEntry): ProviderTeamMatchStatisti
 
 // --- provider --------------------------------------------------------------
 
+const log = createLogger('provider:api-football');
+
+/**
+ * True when the provider refused because of the plan, not because of the data.
+ *
+ * Worth distinguishing: a plan restriction is permanent and needs a different
+ * request shape, whereas a transient error should just be retried.
+ */
+function isPlanRestriction(error: unknown): boolean {
+  return error instanceof Error && /do not have access|not available for your plan/i.test(error.message);
+}
+
 export function createApiFootballProvider(config: {
   apiKey: string;
   baseUrl: string;
@@ -262,8 +275,11 @@ export function createApiFootballProvider(config: {
     async getFixturesByIds(matchExternalIds: string[]): Promise<ProviderFixture[]> {
       if (matchExternalIds.length === 0) return [];
 
-      // The endpoint accepts at most 20 dash-separated ids per call; batching
-      // matters when the daily budget is 100 requests.
+      // The endpoint accepts 20 dash-separated ids per call, but only on a paid
+      // plan — Free rejects `ids` outright ("Free plans do not have access to
+      // the Ids parameter"), which silently broke result sync entirely. Try the
+      // cheap batched form first and fall back to one call per fixture, which
+      // every plan allows.
       const batches: string[][] = [];
       for (let i = 0; i < matchExternalIds.length; i += 20) {
         batches.push(matchExternalIds.slice(i, i + 20));
@@ -271,8 +287,20 @@ export function createApiFootballProvider(config: {
 
       const results: ProviderFixture[] = [];
       for (const batch of batches) {
-        const raw = await client.fetch<RawFixture[]>('/fixtures', { ids: batch.join('-') });
-        results.push(...raw.map(mapFixture));
+        try {
+          const raw = await client.fetch<RawFixture[]>('/fixtures', { ids: batch.join('-') });
+          results.push(...raw.map(mapFixture));
+        } catch (error) {
+          if (!isPlanRestriction(error)) throw error;
+
+          log.info('ids parameter unavailable on this plan, fetching individually', {
+            fixtures: batch.length,
+          });
+          for (const id of batch) {
+            const raw = await client.fetch<RawFixture[]>('/fixtures', { id });
+            results.push(...raw.map(mapFixture));
+          }
+        }
       }
       return results;
     },

@@ -9,6 +9,7 @@ import {
   publicationCovering,
   todayInSchedule,
 } from '@/lib/schedule/bulletin-schedule';
+import { syncMatchOddsForWindow } from '@/services/ingestion/match-odds-sync';
 import { syncFixturesForWindow } from '../ingestion/fixture-sync';
 import { syncBulletinForWindow } from '../ingestion/bulletin-sync';
 import { syncMatchResults } from '../ingestion/result-sync';
@@ -37,6 +38,7 @@ import { getQuotaState } from '@/lib/providers/quota';
 export type JobName =
   | 'bulletin-publication'
   | 'fixture-topup'
+  | 'match-odds'
   | 'rebuild-features'
   | 'narrate-analyses'
   | 'result-sync'
@@ -191,6 +193,43 @@ export async function runFixtureTopup(): Promise<JobOutcome> {
         itemsProcessed: fixtures.matchesUpserted,
         itemsFailed: fixtures.daysDeferred.length,
         metadata: { publication: activePublication, window: window.days, fixtures },
+      };
+    },
+  });
+}
+
+/**
+ * Pulls the full market set for the window, one request per fixture.
+ *
+ * Separate from the publication so prices can be refreshed as kickoff nears
+ * without regenerating coupons, and so the daily allowance is spent in a
+ * predictable, capped way rather than inside a larger job.
+ */
+export async function runMatchOddsSync(): Promise<JobOutcome> {
+  const schedule = await getBulletinSchedule();
+  const today = todayInSchedule(schedule);
+  const activePublication =
+    publicationCovering(today, schedule) ?? nextPublicationDate(today, schedule, { inclusive: true });
+  const window = coverageWindow(activePublication, schedule);
+
+  return runJob({
+    jobName: 'match-odds',
+    // Keyed on the hour: prices move, so several runs a day are legitimate,
+    // but two runs in the same hour are a duplicate and are skipped.
+    runKey: runKeyFor('match-odds', `${today}T${new Date().getUTCHours()}`),
+    lockKey: 'ingestion',
+    lockTtlMs: 20 * 60 * 1000,
+    handler: async ({ logger }) => {
+      const odds = await syncMatchOddsForWindow(window);
+      logger.info('window priced', {
+        publication: activePublication,
+        markets: odds.marketsSeen,
+        quotaRemaining: odds.quotaRemaining,
+      });
+      return {
+        itemsProcessed: odds.pricesStored,
+        itemsFailed: odds.fixturesRequested - odds.fixturesPriced,
+        metadata: { publication: activePublication, odds },
       };
     },
   });
@@ -352,6 +391,8 @@ export async function runNamedJob(name: JobName, request: JobRequest = {}): Prom
       return runBulletinPublication(request);
     case 'fixture-topup':
       return runFixtureTopup();
+    case 'match-odds':
+      return runMatchOddsSync();
     case 'rebuild-features':
       return runFeatureRebuild();
     case 'narrate-analyses':
@@ -368,6 +409,7 @@ export async function runNamedJob(name: JobName, request: JobRequest = {}): Prom
 export const JOB_NAMES: JobName[] = [
   'bulletin-publication',
   'fixture-topup',
+  'match-odds',
   'rebuild-features',
   'narrate-analyses',
   'result-sync',

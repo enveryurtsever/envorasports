@@ -26,7 +26,7 @@ export async function generateMetadata({
     description: t('description'),
     // Tell crawlers about the other language rather than letting them guess.
     alternates: {
-      languages: { en: '/', tr: '/tr' },
+      languages: { tr: '/', en: '/en' },
     },
   };
 }

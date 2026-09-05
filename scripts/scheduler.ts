@@ -9,6 +9,7 @@ import {
   runBulletinPublication,
   runFeatureRebuild,
   runFixtureTopup,
+  runMatchOddsSync,
   runNarration,
   runResultSync,
   runSettlementSweep,
@@ -76,6 +77,13 @@ const JOBS: ScheduledJob[] = [
     name: 'fixture-topup',
     everyMs: 6 * 60 * MINUTE,
     run: () => runFixtureTopup(),
+  },
+  {
+    // One request per fixture against a 100/day allowance, so four times a day
+    // keeps prices current without crowding out fixtures and result sync.
+    name: 'match-odds',
+    everyMs: 6 * 60 * MINUTE,
+    run: () => runMatchOddsSync(),
   },
   {
     // Self-throttles per match: costs nothing when nothing is due.

@@ -20,8 +20,7 @@ import {
   type CorrelationMatrix,
   type SelectionRef,
 } from './correlation';
-import { buildSystemPlan, SystemPlanError } from '@/lib/coupons/system-math';
-import { parseSystemType } from '@/lib/math/combinatorics';
+import { buildSystemPlan, parseSystemSizes, SystemPlanError } from '@/lib/coupons/system-math';
 
 const log = createLogger('coupons:generator');
 
@@ -476,17 +475,26 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     });
   }
 
-  // System coupons last: they reuse the same candidate pool.
-  const systemOutcome = await generateSystemCoupons(
-    candidates,
-    matrix,
-    options,
-    run.id,
-    weights,
-    groupKeys,
-  );
-  outcomes.push(systemOutcome.outcome);
-  couponsGenerated += systemOutcome.produced;
+  // System coupons last: they reuse the same candidate pool, and can be built
+  // from more than one category — a high-variance set benefits most, since a
+  // system only needs k of n legs to return anything.
+  for (const sourceCategory of options.systemSettings.sourceCategories) {
+    const settings = options.categorySettings[sourceCategory as CouponCategory];
+    if (!settings) continue;
+
+    const systemOutcome = await generateSystemCoupons(
+      candidates,
+      matrix,
+      options,
+      run.id,
+      weights,
+      groupKeys,
+      sourceCategory as CouponCategory,
+      couponsGenerated,
+    );
+    outcomes.push(systemOutcome.outcome);
+    couponsGenerated += systemOutcome.produced;
+  }
 
   await prisma.couponGenerationRun.update({
     where: { id: run.id },
@@ -580,12 +588,14 @@ async function generateSystemCoupons(
   runId: string,
   weights: CouponScoringWeights,
   groupKeys: LocalDateKey[],
+  sourceCategory: CouponCategory,
+  referenceOffset: number,
 ): Promise<{ outcome: CategoryOutcome; produced: number }> {
   const system = options.systemSettings;
-  const settings = options.categorySettings.COMBINATION_SYSTEM;
+  const settings = options.categorySettings[sourceCategory];
 
   const outcome: CategoryOutcome = {
-    category: 'COMBINATION_SYSTEM',
+    category: sourceCategory,
     requested: system.couponCount,
     produced: 0,
     candidatePool: 0,
@@ -597,11 +607,12 @@ async function generateSystemCoupons(
     return { outcome, produced: 0 };
   }
 
-  const k = parseSystemType(system.defaultSystemType);
-  if (k === null) {
+  const sizes = parseSystemSizes(system.defaultSystemType);
+  if (sizes.length === 0) {
     outcome.shortfallReason = 'invalid_system_type';
     return { outcome, produced: 0 };
   }
+  const smallestSize = sizes[0] as number;
 
   const pool = filterForCategory(candidates, settings);
   outcome.candidatePool = pool.length;
@@ -633,13 +644,18 @@ async function generateSystemCoupons(
       usedMatches.add(candidate.matchId);
     }
 
-    if (base.length < system.minBaseSelections || base.length < k) continue;
+    if (base.length < system.minBaseSelections || base.length < Math.max(...sizes)) continue;
 
     let plan;
     try {
       plan = buildSystemPlan({
-        selections: base.map((c) => ({ id: c.predictionId, odds: c.odds, matchId: c.matchId })),
-        systemSelectionCount: k,
+        selections: base.map((c) => ({
+          id: c.predictionId,
+          odds: c.odds,
+          matchId: c.matchId,
+          probability: c.probability,
+        })),
+        systemSizes: sizes,
         stakePerColumn: system.stakePerColumn,
         maxTotalStake: system.maxTotalStake,
       });
@@ -658,9 +674,11 @@ async function generateSystemCoupons(
     // that every base selection does. Requiring all 8 of a System-3's legs to
     // win would reject every system ever built — the whole point is that only
     // k of them need to come in.
+    // The easiest size to land is the one that decides whether the system is
+    // worth offering at all.
     const columnProbability = expectedColumnProbability(
       base.map((c) => Number(c.probability)),
-      k,
+      smallestSize,
     );
     if (columnProbability < system.minCombinedProbability) {
       outcome.shortfallReason = 'column_probability_below_minimum';
@@ -672,22 +690,35 @@ async function generateSystemCoupons(
     const risk = base.reduce((sum, c) => sum + c.risk, 0) / base.length;
     const distinctMarkets = new Set(base.map((c) => c.marketCode)).size;
     const diversification = Math.min(1, distinctMarkets / base.length);
-    const couponEv = naive.times(totalOdds).minus(1);
+
+    // A system is judged on its columns: the chance it returns anything, and
+    // the expected return against the whole stake. Using the product of every
+    // leg would report a probability near zero and an absurd expected value,
+    // because a system never needed all of them to land.
+    const estimatedProbability = plan.returnProbability !== null
+      ? dec(plan.returnProbability)
+      : naive;
+    const couponEv =
+      plan.expectedReturn !== null && plan.totalStake.greaterThan(0)
+        ? plan.expectedReturn.dividedBy(plan.totalStake).minus(1)
+        : naive.times(totalOdds).minus(1);
 
     const built: BuiltCoupon = {
-      category: 'COMBINATION_SYSTEM',
+      // The system keeps the category it was drawn from, so a Surprise system
+      // is filed under Surprise rather than in a separate bucket.
+      category: sourceCategory,
       targetDate: groupKey,
-      strategy: `system_${k}`,
+      strategy: `system_${plan.systemLabel}`,
       selections: base,
       totalOdds: toOdds(totalOdds),
-      estimatedProbability: naive,
+      estimatedProbability,
       expectedValue: couponEv,
       confidence,
       risk,
       correlation,
       diversification,
       score:
-        Number(naive) * weights.probabilityWeight +
+        Number(estimatedProbability) * weights.probabilityWeight +
         Number(couponEv) * weights.valueWeight +
         confidence * weights.confidenceWeight +
         diversification * weights.diversificationWeight -
@@ -695,7 +726,7 @@ async function generateSystemCoupons(
         risk * weights.riskPenalty,
     };
 
-    const couponId = await persistCoupon(built, runId, options, produced);
+    const couponId = await persistCoupon(built, runId, options, referenceOffset + produced);
     await prisma.coupon.update({ where: { id: couponId }, data: { kind: 'SYSTEM' } });
 
     const couponSelections = await prisma.couponSelection.findMany({
@@ -712,9 +743,11 @@ async function generateSystemCoupons(
         systemType: plan.systemType,
         baseSelectionCount: plan.baseSelectionCount,
         systemSelectionCount: plan.systemSelectionCount,
+        systemSizes: plan.systemSizes,
         columnCount: plan.columnCount,
         stakePerColumn: new Prisma.Decimal(plan.stakePerColumn.toFixed(2)),
         totalStake: new Prisma.Decimal(plan.totalStake.toFixed(2)),
+        maxReturn: new Prisma.Decimal(plan.maxReturn.toFixed(2)),
         currency: system.currency,
       },
       select: { id: true },
@@ -724,6 +757,7 @@ async function generateSystemCoupons(
       data: plan.columns.map((column) => ({
         systemCouponId: systemCoupon.id,
         columnIndex: column.columnIndex,
+        size: column.size,
         combinedOdds: new Prisma.Decimal(column.combinedOdds.toFixed(4)),
         stake: new Prisma.Decimal(column.stake.toFixed(2)),
       })),

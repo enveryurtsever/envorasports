@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { serverEnv } from '@/lib/env';
 import { createLogger } from '@/lib/logging/logger';
 import { prisma } from '@/lib/db/prisma';
+import { availableModels, isQuotaError, markExhausted } from './model-budget';
 import {
   NARRATION_RESPONSE_SCHEMA,
   findBannedLanguage,
@@ -95,9 +96,13 @@ interface GeminiResponse {
   error?: { message?: string };
 }
 
-async function callGemini(request: NarrationRequest, signal?: AbortSignal): Promise<unknown> {
+async function callGemini(
+  request: NarrationRequest,
+  model: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
   const env = serverEnv();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -117,7 +122,10 @@ async function callGemini(request: NarrationRequest, signal?: AbortSignal): Prom
   });
 
   if (!response.ok) {
-    throw new Error(`Gemini responded ${response.status}`);
+    // The body carries the reason — which quota, and how long to wait. Without
+    // it a 429 is indistinguishable from a daily exhaustion.
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Gemini responded ${response.status}: ${detail.slice(0, 300)}`);
   }
 
   const body = (await response.json()) as GeminiResponse;
@@ -139,55 +147,126 @@ export function templateNarration(request: NarrationRequest): Narration {
   const tr = request.locale === 'tr';
   const payload = request.payload as Record<string, unknown>;
 
-  const factors: Narration['keyFactors'] = [];
-  const agreement = typeof payload.modelAgreement === 'number' ? payload.modelAgreement : null;
+  const str = (key: string): string | null =>
+    typeof payload[key] === 'string' ? (payload[key] as string) : null;
 
-  if (agreement !== null) {
-    factors.push({
-      factor: tr ? 'Model uyumu' : 'Model agreement',
-      impact: agreement >= 0.7 ? 'POSITIVE' : agreement >= 0.45 ? 'NEUTRAL' : 'NEGATIVE',
-      confidence: agreement,
-      explanation: tr
-        ? 'Modellerin birbirine ne kadar yakın sonuç ürettiğini gösterir.'
-        : 'How closely the contributing models arrived at the same view.',
-    });
+  interface PayloadSelection {
+    match?: string;
+    league?: string;
+    pick?: string;
+    odds?: string;
+    modelProbability?: string;
+    marketProbability?: string;
+    edge?: string;
+  }
+  const selections = Array.isArray(payload.selections)
+    ? (payload.selections as PayloadSelection[])
+    : [];
+
+  const system = payload.system as { label?: string; legs?: number; columns?: number } | null;
+
+  // Written from this coupon's own figures. A generic paragraph is worse than
+  // no paragraph — it tells the reader nothing about what they are looking at.
+  const summaryParts: string[] = [];
+
+  if (selections.length > 0) {
+    const legs = selections
+      .slice(0, 3)
+      .map((s) => `${s.match ?? ''}${s.pick ? ` (${s.pick})` : ''}`)
+      .filter(Boolean)
+      .join(tr ? '; ' : '; ');
+
+    const more = selections.length > 3 ? selections.length - 3 : 0;
+
+    summaryParts.push(
+      tr
+        ? `Bu kupon ${selections.length} seçimden oluşuyor: ${legs}${more > 0 ? ` ve ${more} seçim daha` : ''}.`
+        : `This coupon has ${selections.length} selections: ${legs}${more > 0 ? ` and ${more} more` : ''}.`,
+    );
   }
 
-  const quality = typeof payload.dataQuality === 'number' ? payload.dataQuality : null;
-  if (quality !== null) {
-    factors.push({
-      factor: tr ? 'Veri kalitesi' : 'Data quality',
-      impact: quality >= 0.7 ? 'POSITIVE' : quality >= 0.5 ? 'NEUTRAL' : 'NEGATIVE',
-      confidence: quality,
+  const odds = str('totalOdds');
+  const modelProbability = str('modelProbability');
+  if (odds) {
+    summaryParts.push(
+      tr
+        ? `Toplam oran ${odds}${modelProbability ? `, modelin tutma olasılığı ${modelProbability}` : ''}.`
+        : `Total odds ${odds}${modelProbability ? `, with a model probability of ${modelProbability}` : ''}.`,
+    );
+  }
+
+  if (system?.label) {
+    summaryParts.push(
+      tr
+        ? `Sistem ${system.label} oynanıyor, yani seçimlerin tamamının tutması gerekmiyor.`
+        : `Played as system ${system.label}, so not every selection has to land.`,
+    );
+  }
+
+  summaryParts.push(
+    tr
+      ? 'Tahminler istatistikseldir ve sonuç garantisi vermez.'
+      : 'Predictions are statistical estimates and are not guarantees of outcome.',
+  );
+
+  // One factor per selection, built from its own edge — the actual reason it
+  // is on the coupon.
+  const keyFactors: Narration['keyFactors'] = selections.slice(0, 4).map((selection) => {
+    const edge = selection.edge ?? '';
+    const negative = edge.trim().startsWith('-');
+
+    return {
+      factor: `${selection.match ?? ''}${selection.pick ? ` · ${selection.pick}` : ''}`.slice(0, 60) ||
+        (tr ? 'Seçim' : 'Selection'),
+      impact: negative ? 'NEGATIVE' : 'POSITIVE',
+      confidence: 0.6,
       explanation: tr
-        ? 'Modelin ihtiyaç duyduğu verinin ne kadarının mevcut olduğunu ölçer.'
-        : 'How much of the data the model wanted was actually available.',
-    });
+        ? `Oran ${selection.odds ?? '—'}; model ${selection.modelProbability ?? '—'} verirken piyasa ${selection.marketProbability ?? '—'} ima ediyor, aradaki fark ${edge || '—'}.`
+        : `Priced at ${selection.odds ?? '—'}; the model says ${selection.modelProbability ?? '—'} against a market-implied ${selection.marketProbability ?? '—'}, a gap of ${edge || '—'}.`,
+    };
+  });
+
+  const risks: string[] = [];
+  if (system?.columns) {
+    risks.push(
+      tr
+        ? `${system.columns} kolonun tamamı tutmadıkça maksimum kazanç elde edilmez.`
+        : `The maximum return needs all ${system.columns} columns to land.`,
+    );
+  } else if (selections.length > 1) {
+    risks.push(
+      tr
+        ? `Kuponun kazanması için ${selections.length} seçimin hepsinin tutması gerekir.`
+        : `Every one of the ${selections.length} selections has to land for the coupon to win.`,
+    );
+  }
+
+  const risk = str('risk');
+  if (risk) {
+    risks.push(tr ? `Modelin risk skoru ${risk}.` : `The model's risk score is ${risk}.`);
   }
 
   const limitations: string[] = [];
   if (payload.hasXg === false) {
     limitations.push(
       tr
-        ? 'Bu maç için beklenen gol (xG) verisi yok; xG modeli devre dışı.'
-        : 'No expected-goals data for this match, so the xG model did not contribute.',
+        ? 'Bu maçlar için beklenen gol (xG) verisi yok; xG modeli katkı vermedi.'
+        : 'No expected-goals data for these matches, so the xG model did not contribute.',
     );
   }
-  if (quality !== null && quality < 0.6) {
-    limitations.push(
-      tr ? 'Veri kalitesi düşük; tahminin ağırlığı sınırlandırıldı.' : 'Data quality is low, so the estimate carries less weight.',
-    );
-  }
+  limitations.push(
+    tr
+      ? 'Sakatlık, kadro ve hakem bilgileri bu analize dâhil değildir.'
+      : 'Injury, line-up and referee information is not part of this analysis.',
+  );
 
   return {
-    summary: tr
-      ? 'Bu analiz, modelin hesapladığı olasılık ve piyasa fiyatı karşılaştırmasına dayanır. Tahminler istatistiksel öngörüdür, sonuç garantisi değildir.'
-      : 'This analysis rests on the model’s computed probability compared with the market price. Predictions are statistical estimates, not guarantees of outcome.',
-    keyFactors: factors,
-    risks: [
+    summary: summaryParts.join(' '),
+    keyFactors,
+    risks: risks.length > 0 ? risks : [
       tr
-        ? 'Model çıktısı belirsizlik içerir; tek maç sonucu modelin doğruluğunu ölçmez.'
-        : 'Model output carries uncertainty; a single result does not measure whether the model was right.',
+        ? 'Model çıktısı belirsizlik içerir; tek sonuç modelin doğruluğunu ölçmez.'
+        : 'Model output carries uncertainty; one result does not measure whether it was right.',
     ],
     dataLimitations: limitations,
   };
@@ -205,7 +284,6 @@ export function roundPayload(value: unknown): unknown {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return null;
     if (Number.isInteger(value)) return value;
-    // Probabilities and ratios read best as whole percentages; prices to 2dp.
     return Math.abs(value) < 1 ? Number(value.toFixed(4)) : Number(value.toFixed(2));
   }
   if (Array.isArray(value)) return value.map(roundPayload);
@@ -269,7 +347,16 @@ export async function narrate(
   let lastReason = 'unknown';
   const MAX_ATTEMPTS = 3;
 
+  // Models to try in order. A 429 moves to the next one instead of retrying:
+  // the free tier's cap is per day and per model, so waiting cannot clear it
+  // but a different model has its own budget.
+  const models = await availableModels();
+  let modelIndex = 0;
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const model = models[modelIndex];
+    if (!model) break;
+
     // 503 from Gemini means "busy", not "wrong". Back off before retrying.
     if (attempt > 1) {
       await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt - 1)));
@@ -281,15 +368,30 @@ export async function narrate(
     try {
       let raw: unknown;
       try {
-        raw = await callGemini(request, controller.signal);
+        raw = await callGemini(request, model, controller.signal);
       } catch (error) {
         lastReason = `request_failed: ${String(error)}`;
+
+        if (isQuotaError(error)) {
+          await markExhausted(model);
+          modelIndex++;
+          // Not a failed attempt — nothing was generated, so it must not eat
+          // the retry budget the next model is entitled to.
+          attempt--;
+          if (modelIndex >= models.length) break;
+        }
         continue;
       }
 
       const parsed = narrationSchema.safeParse(raw);
       if (!parsed.success) {
-        lastReason = 'schema_validation_failed';
+        // Name the offending field: "too long" and "wrong shape" need different
+        // fixes, and without this the log says only that something was wrong.
+        const issues = parsed.error.issues
+          .slice(0, 4)
+          .map((issue) => `${issue.path.join('.') || 'root'}: ${issue.message}`)
+          .join('; ');
+        lastReason = `schema_validation_failed: ${issues}`;
         continue;
       }
 

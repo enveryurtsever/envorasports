@@ -6,8 +6,7 @@ import { combinedProbability } from '@/lib/math/probability';
 import { DEFAULT_SCORING_WEIGHTS, type CouponScoringWeights } from '@/lib/config/coupon-settings';
 import { getAppSetting, getSystemSettings } from '@/lib/config/settings-service';
 import { couponCorrelation, loadCorrelationMatrix } from './correlation';
-import { buildSystemPlan } from '@/lib/coupons/system-math';
-import { parseSystemType } from '@/lib/math/combinatorics';
+import { buildSystemPlan, parseSystemSizes } from '@/lib/coupons/system-math';
 import { invalidate } from '@/lib/cache/ttl-cache';
 
 const log = createLogger('coupons:editor');
@@ -219,24 +218,30 @@ async function rebuildSystemColumns(couponId: string): Promise<void> {
   const coupon = await prisma.coupon.findUnique({
     where: { id: couponId },
     select: {
-      selections: { select: { id: true, matchId: true, odds: true } },
+      selections: { select: { id: true, matchId: true, odds: true, probability: true } },
       systemCoupon: { select: { id: true, systemType: true, stakePerColumn: true } },
     },
   });
   if (!coupon?.systemCoupon) return;
 
   const settings = await getSystemSettings();
-  const k = parseSystemType(coupon.systemCoupon.systemType) ?? 3;
+  const sizes = parseSystemSizes(coupon.systemCoupon.systemType);
+  const largest = sizes.length > 0 ? Math.max(...sizes) : 3;
 
-  if (coupon.selections.length < k) {
+  if (coupon.selections.length < largest) {
     throw new CouponEditError(
-      `A ${coupon.systemCoupon.systemType} needs at least ${k} selections; ${coupon.selections.length} remain`,
+      `A system of ${sizes.join(',')} needs at least ${largest} selections; ${coupon.selections.length} remain`,
     );
   }
 
   const plan = buildSystemPlan({
-    selections: coupon.selections.map((s) => ({ id: s.id, odds: dec(s.odds), matchId: s.matchId })),
-    systemSelectionCount: k,
+    selections: coupon.selections.map((s) => ({
+      id: s.id,
+      odds: dec(s.odds),
+      matchId: s.matchId,
+      probability: dec(s.probability),
+    })),
+    systemSizes: sizes.length > 0 ? sizes : [3],
     stakePerColumn: dec(coupon.systemCoupon.stakePerColumn),
     maxTotalStake: settings.maxTotalStake,
   });
@@ -248,8 +253,10 @@ async function rebuildSystemColumns(couponId: string): Promise<void> {
       data: {
         baseSelectionCount: plan.baseSelectionCount,
         systemSelectionCount: plan.systemSelectionCount,
+        systemSizes: plan.systemSizes,
         columnCount: plan.columnCount,
         totalStake: new Prisma.Decimal(plan.totalStake.toFixed(2)),
+        maxReturn: new Prisma.Decimal(plan.maxReturn.toFixed(2)),
       },
     }),
   ]);
@@ -258,6 +265,7 @@ async function rebuildSystemColumns(couponId: string): Promise<void> {
     data: plan.columns.map((column) => ({
       systemCouponId: coupon.systemCoupon!.id,
       columnIndex: column.columnIndex,
+      size: column.size,
       combinedOdds: new Prisma.Decimal(column.combinedOdds.toFixed(4)),
       stake: new Prisma.Decimal(column.stake.toFixed(2)),
     })),

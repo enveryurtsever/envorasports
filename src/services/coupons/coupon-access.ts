@@ -36,16 +36,39 @@ export interface HiddenSummary {
   requiredPlan: string | null;
 }
 
+export interface CouponSystemInfo {
+  systemType: string;
+  /** "4,5,6" — how a Turkish slip reads. */
+  systemLabel: string;
+  systemSizes: number[];
+  baseSelectionCount: number;
+  columnCount: number;
+  stakePerColumn: number;
+  /** columnCount x stakePerColumn, computed by the engine and stored. */
+  totalStake: number;
+  /** What every column landing would pay. */
+  maxReturn: number;
+  /** What the columns that actually won returned. */
+  totalReturn: number;
+  winningColumns: number;
+  currency: string;
+}
+
 export interface UnlockedCoupon {
   id: string;
   reference: string;
   category: CouponCategory;
+  kind: string;
+  system: CouponSystemInfo | null;
   totalOdds: number;
   estimatedProbability: number;
   expectedValue: number;
   confidenceScore: number;
   riskScore: number;
   resultStatus: string;
+  /** Accumulator odds after void legs are neutralised; null until settled. */
+  effectiveOdds: number | null;
+  settledAt: Date | null;
   targetDate: Date;
   firstKickoffUtc: Date;
   lastKickoffUtc: Date;
@@ -99,6 +122,23 @@ const COUPON_SELECT = {
   id: true,
   reference: true,
   category: true,
+  kind: true,
+  systemCoupon: {
+    select: {
+      systemType: true,
+      systemSizes: true,
+      baseSelectionCount: true,
+      columnCount: true,
+      stakePerColumn: true,
+      totalStake: true,
+      maxReturn: true,
+      totalReturn: true,
+      winningColumns: true,
+      currency: true,
+    },
+  },
+  effectiveOdds: true,
+  settledAt: true,
   totalOdds: true,
   estimatedProbability: true,
   expectedValue: true,
@@ -155,12 +195,30 @@ function toUnlocked(coupon: CouponRow): UnlockedCoupon {
     id: coupon.id,
     reference: coupon.reference,
     category: coupon.category as CouponCategory,
+    kind: coupon.kind,
+    system: coupon.systemCoupon
+      ? {
+          systemType: coupon.systemCoupon.systemType,
+          systemLabel: coupon.systemCoupon.systemSizes.join(','),
+          systemSizes: coupon.systemCoupon.systemSizes,
+          baseSelectionCount: coupon.systemCoupon.baseSelectionCount,
+          columnCount: coupon.systemCoupon.columnCount,
+          stakePerColumn: Number(coupon.systemCoupon.stakePerColumn),
+          totalStake: Number(coupon.systemCoupon.totalStake),
+          maxReturn: Number(coupon.systemCoupon.maxReturn),
+          totalReturn: Number(coupon.systemCoupon.totalReturn),
+          winningColumns: coupon.systemCoupon.winningColumns,
+          currency: coupon.systemCoupon.currency,
+        }
+      : null,
     totalOdds: Number(coupon.totalOdds),
     estimatedProbability: Number(coupon.estimatedProbability),
     expectedValue: Number(coupon.expectedValue),
     confidenceScore: Number(coupon.confidenceScore),
     riskScore: Number(coupon.riskScore),
     resultStatus: coupon.resultStatus,
+    effectiveOdds: coupon.effectiveOdds === null ? null : Number(coupon.effectiveOdds),
+    settledAt: coupon.settledAt,
     targetDate: coupon.targetDate,
     firstKickoffUtc: coupon.firstKickoffUtc,
     lastKickoffUtc: coupon.lastKickoffUtc,

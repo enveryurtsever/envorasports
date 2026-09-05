@@ -88,15 +88,3 @@ export function* combinations<T>(items: readonly T[], k: number): Generator<T[]>
     }
   }
 }
-
-/** Parses "SYSTEM_3" into k=3. Returns null for anything else. */
-export function parseSystemType(systemType: string): number | null {
-  const match = /^SYSTEM_(\d+)$/.exec(systemType);
-  if (!match) return null;
-  const k = Number.parseInt(match[1] as string, 10);
-  return Number.isInteger(k) && k > 0 ? k : null;
-}
-
-export function formatSystemType(k: number): string {
-  return `SYSTEM_${k}`;
-}

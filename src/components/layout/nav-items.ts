@@ -14,17 +14,18 @@ export interface NavItem {
 
 export const PRIMARY_NAV: NavItem[] = [
   { href: '/', labelKey: 'dashboard' },
+  // Every coupon lives here, systems included — a separate systems page just
+  // split the same week's slate across two menus.
   { href: '/predictions', labelKey: 'predictions' },
-  { href: '/systems', labelKey: 'systems' },
+  { href: '/winners', labelKey: 'winners' },
   { href: '/matches', labelKey: 'matches' },
-  { href: '/backtest', labelKey: 'backtest' },
   { href: '/pricing', labelKey: 'pricing' },
 ];
 
 export const MOBILE_NAV: NavItem[] = [
   { href: '/', labelKey: 'mobile.home' },
   { href: '/predictions', labelKey: 'mobile.predictions' },
-  { href: '/systems', labelKey: 'mobile.systems' },
+  { href: '/winners', labelKey: 'mobile.winners' },
   { href: '/matches', labelKey: 'mobile.matches' },
   { href: '/account', labelKey: 'mobile.account' },
 ];

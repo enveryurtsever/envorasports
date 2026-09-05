@@ -1,14 +1,15 @@
 import { defineRouting } from 'next-intl/routing';
 
 /**
- * English is the source language and the product default, so it is served
- * without a prefix (`/matches`). Turkish is prefixed (`/tr/matches`).
+ * Turkish is the product's primary market, so it is the default and is served
+ * without a prefix (`/matches`). English is prefixed (`/en/matches`) and stays
+ * fully maintained — going global later is a config change, not a rewrite.
  *
  * Adding a third locale = add it here + drop a messages file next to it.
  */
 export const routing = defineRouting({
-  locales: ['en', 'tr'],
-  defaultLocale: 'en',
+  locales: ['tr', 'en'],
+  defaultLocale: 'tr',
   localePrefix: 'as-needed',
   localeDetection: true,
 });
@@ -16,8 +17,8 @@ export const routing = defineRouting({
 export type AppLocale = (typeof routing.locales)[number];
 
 export const LOCALE_LABELS: Record<AppLocale, string> = {
-  en: 'English',
   tr: 'Türkçe',
+  en: 'English',
 };
 
 /** Maps the URL locale to the `Locale` enum stored on `users.locale`. */

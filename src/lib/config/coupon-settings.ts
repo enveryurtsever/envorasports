@@ -30,7 +30,8 @@ export const couponCategorySettingsSchema = z
     minTotalOdds: z.number().min(1).max(100_000),
     maxTotalOdds: z.number().min(1).max(100_000).nullable(),
 
-    minSelections: z.number().int().min(1).max(20),
+    // A single-match coupon is just a bet; the product does not offer one.
+    minSelections: z.number().int().min(2).max(20),
     maxSelections: z.number().int().min(1).max(20),
 
     minConfidence: probability,
@@ -64,8 +65,15 @@ export type CouponCategorySettings = z.infer<typeof couponCategorySettingsSchema
 export const systemCouponSettingsSchema = z
   .object({
     enabled: z.boolean(),
-    allowedSystemTypes: z.array(z.string().regex(/^SYSTEM_\d+$/)).min(1),
-    defaultSystemType: z.string().regex(/^SYSTEM_\d+$/),
+    // SYSTEM_3 or SYSTEM_3_4_5 — one or several column sizes.
+    allowedSystemTypes: z.array(z.string().regex(/^SYSTEM_\d+(_\d+)*$/)).min(1),
+    defaultSystemType: z.string().regex(/^SYSTEM_\d+(_\d+)*$/),
+    /**
+     * Categories that also produce a system coupon. High-variance categories
+     * gain most: a system only needs k of n legs to return something, which is
+     * exactly the shape of a long-shot selection set.
+     */
+    sourceCategories: z.array(z.enum(COUPON_CATEGORIES)).min(1),
     minBaseSelections: z.number().int().min(2).max(20),
     maxBaseSelections: z.number().int().min(2).max(20),
     stakePerColumn: z.number().min(0).max(10_000),
@@ -87,11 +95,17 @@ export const systemCouponSettingsSchema = z
   })
   .refine(
     (s) => {
-      // k must be reachable: SYSTEM_k needs at least k base selections.
-      const ks = s.allowedSystemTypes.map((t) => Number(t.split('_')[1]));
-      return ks.every((k) => Number.isInteger(k) && k >= 1 && k <= s.maxBaseSelections);
+      // Every size must be reachable: the largest needs that many base legs,
+      // and a single-leg column is a straight bet rather than a system.
+      const sizes = s.allowedSystemTypes.flatMap((type) =>
+        type.replace('SYSTEM_', '').split('_').map(Number),
+      );
+      return sizes.every((k) => Number.isInteger(k) && k >= 2 && k <= s.maxBaseSelections);
     },
-    { message: 'A system type requires more selections than maxBaseSelections allows', path: ['allowedSystemTypes'] },
+    {
+      message: 'A system size is below 2 or needs more selections than maxBaseSelections allows',
+      path: ['allowedSystemTypes'],
+    },
   );
 
 export type SystemCouponSettings = z.infer<typeof systemCouponSettingsSchema>;
@@ -111,7 +125,7 @@ export const SETTING_RANGES: Record<string, SettingRange> = {
   couponCount: { min: 0, max: 50, step: 1, unit: 'count' },
   minTotalOdds: { min: 1, max: 1000, step: 0.01, unit: 'odds' },
   maxTotalOdds: { min: 1, max: 100_000, step: 0.01, unit: 'odds' },
-  minSelections: { min: 1, max: 20, step: 1, unit: 'count' },
+  minSelections: { min: 2, max: 20, step: 1, unit: 'count' },
   maxSelections: { min: 1, max: 20, step: 1, unit: 'count' },
   minConfidence: { min: 0, max: 1, step: 0.01, unit: 'ratio' },
   minExpectedValue: { min: -1, max: 10, step: 0.01, unit: 'ratio' },
@@ -201,8 +215,10 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
   },
   COMBINATION_SYSTEM: {
     category: 'COMBINATION_SYSTEM',
-    enabled: true,
-    couponCount: 2,
+    // Retired: systems now come from the categories above. The entry stays so
+    // historical coupons keep a valid category.
+    enabled: false,
+    couponCount: 0,
     minTotalOdds: 1.5,
     maxTotalOdds: null,
     minSelections: 6,
@@ -221,12 +237,17 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
 
 export const DEFAULT_SYSTEM_SETTINGS: SystemCouponSettings = {
   enabled: true,
-  allowedSystemTypes: ['SYSTEM_2', 'SYSTEM_3', 'SYSTEM_4'],
-  defaultSystemType: 'SYSTEM_3',
+  // Turkish slips combine sizes: "Sistem 3,4,5" over 8 legs is
+  // C(8,3)+C(8,4)+C(8,5) = 182 columns on one coupon.
+  allowedSystemTypes: ['SYSTEM_2_3', 'SYSTEM_3_4', 'SYSTEM_3_4_5', 'SYSTEM_4_5_6'],
+  defaultSystemType: 'SYSTEM_3_4_5',
+  // A system is a way of playing a set of picks, not a separate product, so it
+  // is generated from a real category's pool rather than its own.
+  sourceCategories: ['HIGH_VALUE'],
   minBaseSelections: 6,
-  maxBaseSelections: 10,
-  stakePerColumn: 10,
-  maxTotalStake: 2500,
+  maxBaseSelections: 8,
+  stakePerColumn: 5,
+  maxTotalStake: 5000,
   // The operator's own currency: system stakes are real money in TL, not a
   // converted EUR figure.
   currency: 'TRY',

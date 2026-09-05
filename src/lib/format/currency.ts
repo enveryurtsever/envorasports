@@ -16,17 +16,34 @@ export const LOCALE_CURRENCY: Record<AppLocale, string> = {
   tr: 'TRY',
 };
 
-/** Reference stake used for "what would this return" figures. */
-export const REFERENCE_STAKE_BY_CURRENCY: Record<string, number> = {
-  EUR: 100,
-  TRY: 100,
-};
+/**
+ * Default reference stake. The live value comes from the `display.referenceStake`
+ * setting so an operator can change what "max return" is quoted against without
+ * a deploy.
+ */
+export const DEFAULT_REFERENCE_STAKE = 100;
 
 export function currencyFor(locale: string): string {
   return LOCALE_CURRENCY[locale as AppLocale] ?? 'EUR';
 }
 
-export function referenceStakeFor(locale: string): { amount: number; currency: string } {
-  const currency = currencyFor(locale);
-  return { amount: REFERENCE_STAKE_BY_CURRENCY[currency] ?? 100, currency };
+export interface ReferenceStake {
+  amount: number;
+  currency: string;
+}
+
+/** Synchronous fallback for contexts that cannot await a setting. */
+export function referenceStakeFor(locale: string): ReferenceStake {
+  return { amount: DEFAULT_REFERENCE_STAKE, currency: currencyFor(locale) };
+}
+
+import { getAppSetting } from '@/lib/config/settings-service';
+
+/** The operator-configured reference stake for this locale's currency. */
+export async function getReferenceStake(locale: string): Promise<ReferenceStake> {
+  const amount = await getAppSetting<number>('display.referenceStake', DEFAULT_REFERENCE_STAKE);
+  return {
+    amount: Number.isFinite(amount) && amount > 0 ? amount : DEFAULT_REFERENCE_STAKE,
+    currency: currencyFor(locale),
+  };
 }

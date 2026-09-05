@@ -1,9 +1,13 @@
 import { getFormatter, getLocale, getTranslations } from 'next-intl/server';
 import { PremiumCard } from '@/components/ui/card';
-import { ResultBadge } from '@/components/ui/result-badge';
 import { Modal } from '@/components/ui/modal';
 import { AiAnalysis } from '@/components/predictions/ai-analysis';
-import { referenceStakeFor } from '@/lib/format/currency';
+import { getReferenceStake } from '@/lib/format/currency';
+import { METRIC_TOKENS, signedTone } from '@/lib/format/metric-tokens';
+import { formatSelection } from '@/lib/markets/labels';
+import { buildCouponNarrationPayload } from '@/services/narration/coupon-payload';
+import { KickoffCountdown } from '@/components/predictions/kickoff-countdown';
+import { cn } from '@/lib/format/cn';
 import type { UnlockedCoupon } from '@/services/coupons/coupon-access';
 
 const ACCENT: Record<string, 'emerald' | 'gold' | 'none'> = {
@@ -13,12 +17,23 @@ const ACCENT: Record<string, 'emerald' | 'gold' | 'none'> = {
   COMBINATION_SYSTEM: 'gold',
 };
 
+/** A settled leg reads at a glance; a pending one stays quiet. */
+const LEG_MARK: Record<string, { glyph: string; className: string }> = {
+  WON: { glyph: '✓', className: 'bg-emerald-primary text-white' },
+  HALF_WON: { glyph: '✓', className: 'bg-emerald-primary/70 text-white' },
+  LOST: { glyph: '✕', className: 'bg-rose-500 text-white' },
+  HALF_LOST: { glyph: '✕', className: 'bg-rose-500/70 text-white' },
+  VOID: { glyph: '—', className: 'bg-white/20 text-paper' },
+  PUSHED: { glyph: '=', className: 'bg-sky-500/70 text-white' },
+  CANCELED: { glyph: '—', className: 'bg-white/20 text-paper' },
+};
+
 /**
  * One prediction card, sized for a three-across grid.
  *
- * The written analysis is rendered on the server into a modal rather than
- * fetched on click, so opening it is instant and works without JavaScript
- * having to call back.
+ * A won coupon is unmistakable: green banner, the amount in gold, and a tick
+ * beside each leg that landed. A pending one shows the price, the outlay and
+ * the best case, which are the three numbers a reader actually wants.
  */
 export async function CouponCard({
   coupon,
@@ -31,130 +46,253 @@ export async function CouponCard({
   const tm = await getTranslations('metrics');
   const te = await getTranslations('entitlement');
   const tCat = await getTranslations('categories');
+  const ts = await getTranslations('status');
   const format = await getFormatter();
   const locale = await getLocale();
+  const translate = await getTranslations();
 
-  const stake = referenceStakeFor(locale);
-  const potentialReturn = coupon.totalOdds * stake.amount;
+  const stake = await getReferenceStake(locale);
+
+  // A system's stake is its own: columns x stake per column. A straight coupon
+  // is quoted against the configured reference stake.
+  const couponStake = coupon.system ? coupon.system.totalStake : stake.amount;
+  const currency = coupon.system ? coupon.system.currency : stake.currency;
+
+  // Best case for a system is every column landing, which is the sum of the
+  // columns' own returns — not the accumulator odds times the stake.
+  const potentialReturn = coupon.system
+    ? coupon.system.maxReturn
+    : coupon.totalOdds * stake.amount;
+
+  const won = coupon.resultStatus === 'WON' || coupon.resultStatus === 'PARTIAL_WIN';
+  const settled = coupon.resultStatus !== 'PENDING';
+
+  const wonAmount = coupon.system
+    ? coupon.system.totalReturn
+    : (coupon.effectiveOdds ?? coupon.totalOdds) * stake.amount;
+
+  const money = (value: number) =>
+    format.number(value, { style: 'currency', currency, maximumFractionDigits: 2 });
 
   return (
-    <PremiumCard accent={ACCENT[coupon.category] ?? 'none'} className="flex h-full flex-col gap-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <span className="inline-block rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-[0.65rem] font-semibold tracking-wide uppercase">
-            {tCat(`${coupon.category}.short`)}
+    <PremiumCard
+      accent={won ? 'emerald' : (ACCENT[coupon.category] ?? 'none')}
+      className={cn('flex h-full flex-col gap-3 p-0', won && 'ring-1 ring-emerald-primary/50')}
+    >
+      {/* Won banner, modelled on a real slip: result left, amount right. */}
+      {won ? (
+        <div className="flex items-center justify-between gap-2 rounded-t-[--radius-card] bg-emerald-primary px-4 py-2.5">
+          <span className="text-sm font-bold tracking-wide text-white">
+            ({t('legCount', { count: coupon.selections.length })}){' '}
+            {format.dateTime(coupon.settledAt ?? coupon.targetDate, {
+              day: '2-digit',
+              month: '2-digit',
+              year: 'numeric',
+            })}
           </span>
-          <p className="mt-1.5 truncate text-[0.7rem] text-muted">
-            {coupon.reference}
-            {isPreview ? ` · ${te('freePreview')}` : ''}
-          </p>
+          <span className="text-sm font-bold text-gold-light">
+            {money(wonAmount)} {ts('WON')}
+          </span>
         </div>
-        <ResultBadge status={coupon.resultStatus} />
-      </div>
+      ) : null}
 
-      <div className="flex items-baseline gap-2">
-        <span className="tabular text-2xl leading-none font-semibold">
-          {format.number(coupon.totalOdds, 'odds')}
-        </span>
-        <span className="text-xs text-muted">{t('totalOdds')}</span>
-      </div>
+      <div className="flex flex-col gap-3 px-4 pt-4 pb-4">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <span className="inline-block rounded-full border border-white/15 bg-white/5 px-2 py-0.5 text-[0.65rem] font-semibold tracking-wide uppercase">
+              {tCat(`${coupon.category}.short`)}
+            </span>
+            <p className="mt-1.5 truncate text-[0.7rem] text-muted">
+              {coupon.reference}
+              {isPreview ? ` · ${te('freePreview')}` : ''}
+            </p>
+          </div>
 
-      <p className="tabular text-sm text-gold-light">
-        {format.number(potentialReturn, {
-          style: 'currency',
-          currency: stake.currency,
-          maximumFractionDigits: 0,
-        })}
-        <span className="ml-1 text-[0.7rem] text-muted-dark">
-          {te('perStake', {
-            stake: format.number(stake.amount, {
-              style: 'currency',
-              currency: stake.currency,
-              maximumFractionDigits: 0,
-            }),
+          {settled && !won ? (
+            <span className="rounded-full border border-rose-500/50 bg-rose-500/10 px-2.5 py-0.5 text-xs font-medium text-rose-300">
+              {ts(coupon.resultStatus)}
+            </span>
+          ) : (
+            <KickoffCountdown
+              firstKickoffIso={coupon.firstKickoffUtc.toISOString()}
+              lastKickoffIso={coupon.lastKickoffUtc.toISOString()}
+              settled={settled}
+              className="shrink-0 text-[0.7rem] font-medium"
+            />
+          )}
+        </div>
+
+        {/* Price and best case side by side. The payout is what a reader
+            actually compares between coupons, so the odds are set a size
+            smaller rather than competing with it. */}
+        <div className="grid grid-cols-2 gap-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+          <div className="min-w-0">
+            <span className="block text-[0.6rem] tracking-wide text-muted uppercase">
+              {t('totalOdds')}
+            </span>
+            <span
+              className={cn(
+                'tabular block truncate text-base leading-tight font-bold',
+                METRIC_TOKENS.odds.text,
+              )}
+            >
+              {format.number(coupon.totalOdds, 'odds')}
+            </span>
+          </div>
+
+          <div className="min-w-0 text-right">
+            <span className="block text-[0.6rem] tracking-wide text-muted uppercase">
+              {te('maxReturn')}
+            </span>
+            <span
+              className={cn(
+                'tabular block truncate text-lg leading-tight font-bold',
+                METRIC_TOKENS.payout.text,
+              )}
+            >
+              {money(potentialReturn)}
+            </span>
+          </div>
+        </div>
+
+        <dl className="tabular grid grid-cols-3 gap-2 border-y border-white/10 py-2 text-center">
+          <div>
+            <dt className="text-[0.6rem] text-muted uppercase">{tm('confidence')}</dt>
+            <dd className={cn('text-sm font-semibold', METRIC_TOKENS.confidence.text)}>
+              {format.number(coupon.confidenceScore, 'percent')}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[0.6rem] text-muted uppercase">{tm('modelProbability')}</dt>
+            <dd className={cn('text-sm font-semibold', METRIC_TOKENS.modelProbability.text)}>
+              {format.number(coupon.estimatedProbability, 'percent')}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[0.6rem] text-muted uppercase">{tm('ev')}</dt>
+            <dd className={cn('text-sm font-semibold', signedTone('expectedValue', coupon.expectedValue))}>
+              {format.number(coupon.expectedValue, 'signedPercent')}
+            </dd>
+          </div>
+        </dl>
+
+        <ul className="flex-1 space-y-2">
+          {coupon.selections.map((selection) => {
+            const mark = LEG_MARK[selection.resultStatus];
+            const score =
+              selection.match.homeScore !== null && selection.match.awayScore !== null
+                ? `${selection.match.homeScore}-${selection.match.awayScore}`
+                : null;
+
+            return (
+              <li key={selection.id} className="flex items-start gap-2 text-xs">
+                <span
+                  aria-label={mark ? ts(selection.resultStatus) : undefined}
+                  className={cn(
+                    'mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[0.6rem] font-bold',
+                    mark?.className ?? 'bg-white/10 text-muted',
+                  )}
+                >
+                  {mark?.glyph ?? '·'}
+                </span>
+
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate font-medium">
+                      {selection.match.homeTeam} – {selection.match.awayTeam}
+                    </span>
+                    {score ? <span className="tabular shrink-0 text-muted">{score}</span> : null}
+                    <span className={cn('tabular shrink-0 font-semibold', METRIC_TOKENS.odds.text)}>
+                      {format.number(selection.odds, 'odds')}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 flex items-center gap-1.5">
+                    <span className="shrink-0 text-muted">
+                      {format.dateTime(selection.match.kickoffUtc, 'kickoff')}
+                    </span>
+                    <span className="truncate rounded border border-white/20 bg-white/10 px-1.5 py-0.5 text-[0.65rem] font-semibold text-paper">
+                      {formatSelection(translate, selection.marketCode, selection.selectionCode, {
+                        home: selection.match.homeTeam,
+                        away: selection.match.awayTeam,
+                      })}
+                    </span>
+                  </span>
+                </span>
+              </li>
+            );
           })}
-        </span>
-      </p>
+        </ul>
 
-      <dl className="tabular grid grid-cols-3 gap-2 border-y border-white/10 py-2 text-center">
-        <div>
-          <dt className="text-[0.6rem] text-muted uppercase">{tm('confidence')}</dt>
-          <dd className="text-sm font-semibold text-emerald-bright">
-            {format.number(coupon.confidenceScore, 'percent')}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[0.6rem] text-muted uppercase">{t('estimatedProbability')}</dt>
-          <dd className="text-sm font-semibold">
-            {format.number(coupon.estimatedProbability, 'percent')}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[0.6rem] text-muted uppercase">{tm('ev')}</dt>
-          <dd
-            className={`text-sm font-semibold ${
-              coupon.expectedValue >= 0 ? 'text-emerald-bright' : 'text-rose-300'
-            }`}
-          >
-            {format.number(coupon.expectedValue, 'signedPercent')}
-          </dd>
-        </div>
-      </dl>
+        {/* Foot of the card, the way a slip prints it: what was played on the
+            left, what it cost on the right. */}
+        <div className="flex items-end justify-between gap-2 border-t border-white/10 pt-2">
+          <span className="min-w-0 truncate text-[0.7rem] leading-tight font-semibold text-gold-light">
+            {coupon.system
+              ? `${t('systemLabel', { label: coupon.system.systemLabel })}${
+                  won
+                    ? ` · ${t('columnsWon', {
+                        won: coupon.system.winningColumns,
+                        total: coupon.system.columnCount,
+                      })}`
+                    : ''
+                }`
+              : ''}
+          </span>
 
-      <ul className="flex-1 space-y-2">
-        {coupon.selections.map((selection) => (
-          <li key={selection.id} className="text-xs">
-            <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate font-medium">
-                {selection.match.homeTeam} – {selection.match.awayTeam}
-              </span>
-              <span className="tabular font-semibold">
-                {format.number(selection.odds, 'odds')}
-              </span>
-            </div>
-            <div className="flex items-center gap-2 text-muted">
-              <span className="min-w-0 flex-1 truncate">
-                {format.dateTime(selection.match.kickoffUtc, 'kickoff')} · {selection.selectionCode}
-              </span>
-              {selection.resultStatus !== 'PENDING' ? (
-                <ResultBadge status={selection.resultStatus} />
-              ) : null}
-            </div>
-          </li>
-        ))}
-      </ul>
+          <span className="shrink-0 text-right">
+            <span className="block text-[0.6rem] tracking-wide text-muted uppercase">
+              {t('couponStake')}
+            </span>
+            <span className="tabular block text-base leading-tight font-bold">
+              {money(couponStake)}
+            </span>
+          </span>
+        </div>
 
-      <Modal
-        triggerLabel={t('openAnalysis')}
-        closeLabel={t('closeAnalysis')}
-        title={t('analysisFor', { reference: coupon.reference })}
-        triggerClassName="w-full rounded-lg border border-white/15 px-3 py-2 text-xs font-medium transition-colors hover:border-emerald-bright hover:text-emerald-bright"
-      >
-        <AiAnalysis
-          entityType="coupon"
-          entityId={coupon.id}
-          locale={locale === 'tr' ? 'tr' : 'en'}
-          payload={{
-            reference: coupon.reference,
-            category: coupon.category,
-            totalOdds: coupon.totalOdds,
-            estimatedProbability: coupon.estimatedProbability,
-            expectedValue: coupon.expectedValue,
-            confidence: coupon.confidenceScore,
-            risk: coupon.riskScore,
-            selections: coupon.selections.map((s) => ({
-              match: `${s.match.homeTeam} - ${s.match.awayTeam}`,
-              league: s.match.league,
-              market: s.marketCode,
-              selection: s.selectionCode,
-              odds: s.odds,
-              probability: s.probability,
-              impliedProbability: s.impliedProbability,
-              edge: s.edge,
-            })),
-          }}
-        />
-      </Modal>
+        <Modal
+          triggerLabel={t('openAnalysis')}
+          closeLabel={t('closeAnalysis')}
+          title={t('analysisFor', { reference: coupon.reference })}
+          triggerClassName="w-full rounded-lg border border-white/15 px-3 py-2 text-xs font-medium transition-colors hover:border-emerald-bright hover:text-emerald-bright"
+        >
+          <AiAnalysis
+            entityType="coupon"
+            entityId={coupon.id}
+            locale={locale === 'en' ? 'en' : 'tr'}
+            payload={buildCouponNarrationPayload(
+              {
+                reference: coupon.reference,
+                category: coupon.category,
+                totalOdds: coupon.totalOdds,
+                estimatedProbability: coupon.estimatedProbability,
+                expectedValue: coupon.expectedValue,
+                confidenceScore: coupon.confidenceScore,
+                riskScore: coupon.riskScore,
+                system: coupon.system
+                  ? {
+                      label: coupon.system.systemLabel,
+                      legs: coupon.system.baseSelectionCount,
+                      columns: coupon.system.columnCount,
+                    }
+                  : null,
+                selections: coupon.selections.map((s) => ({
+                  homeTeam: s.match.homeTeam,
+                  awayTeam: s.match.awayTeam,
+                  league: s.match.league,
+                  marketCode: s.marketCode,
+                  selectionCode: s.selectionCode,
+                  odds: s.odds,
+                  probability: s.probability,
+                  impliedProbability: s.impliedProbability,
+                  edge: s.edge,
+                })),
+              },
+              translate,
+              format,
+            )}
+          />
+        </Modal>
+      </div>
     </PremiumCard>
   );
 }

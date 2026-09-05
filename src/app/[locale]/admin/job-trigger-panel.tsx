@@ -9,6 +9,7 @@ import { PremiumCard, SectionHeading } from '@/components/ui/card';
 const JOBS = [
   { name: 'bulletin-publication', force: true },
   { name: 'fixture-topup', force: false },
+  { name: 'match-odds', force: false },
   { name: 'rebuild-features', force: false },
   { name: 'narrate-analyses', force: false },
   { name: 'result-sync', force: false },

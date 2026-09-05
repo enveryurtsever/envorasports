@@ -3,6 +3,8 @@ import { createLogger } from '@/lib/logging/logger';
 import { narrate } from '@/lib/narration/narration-service';
 import { getAppSetting } from '@/lib/config/settings-service';
 import type { CoverageWindow } from '@/lib/schedule/bulletin-schedule';
+import { getStandaloneIntl } from '@/i18n/standalone';
+import { buildCouponNarrationPayload } from '@/services/narration/coupon-payload';
 
 const log = createLogger('narration:job');
 
@@ -27,7 +29,9 @@ export async function narrateWindow(
   window: CoverageWindow,
   options: { locales?: Array<'en' | 'tr'>; maxPerRun?: number } = {},
 ): Promise<NarrationJobResult> {
-  const locales = options.locales ?? ['en', 'tr'];
+  // Turkish first: it is the default locale, so if the daily free-tier budget
+  // runs out mid-pass, the language most readers see is the one with model copy.
+  const locales = options.locales ?? ['tr', 'en'];
   const maxPerRun = options.maxPerRun ?? (await getAppSetting<number>('narration.maxPerRun', 20));
   const delayMs = await getAppSetting<number>('narration.delayBetweenCallsMs', 4000);
 
@@ -81,6 +85,9 @@ export async function narrateWindow(
       expectedValue: true,
       confidenceScore: true,
       riskScore: true,
+      systemCoupon: {
+        select: { systemSizes: true, baseSelectionCount: true, columnCount: true },
+      },
       selections: {
         orderBy: { sortOrder: 'asc' },
         select: {
@@ -105,28 +112,45 @@ export async function narrateWindow(
   for (const coupon of coupons) {
     if (result.callsMade >= maxPerRun) break;
 
-    const payload = {
-      reference: coupon.reference,
-      category: coupon.category,
-      totalOdds: Number(coupon.totalOdds),
-      estimatedProbability: Number(coupon.estimatedProbability),
-      expectedValue: Number(coupon.expectedValue),
-      confidence: Number(coupon.confidenceScore),
-      risk: Number(coupon.riskScore),
-      selections: coupon.selections.map((s) => ({
-        match: `${s.match.homeTeam.name} - ${s.match.awayTeam.name}`,
-        league: s.match.league.name,
-        market: s.marketCode,
-        selection: s.selectionCode,
-        odds: Number(s.odds),
-        probability: Number(s.probability),
-        impliedProbability: Number(s.impliedProbability),
-        edge: Number(s.edge),
-      })),
-    };
-
     for (const locale of locales) {
       if (result.callsMade >= maxPerRun) break;
+
+      // The payload is built per locale with readable picks and formatted
+      // percentages. Handing the model `UNDER_3_5` and `0.5086` is how the
+      // analysis ends up reading like a database dump.
+      const { t, format } = await getStandaloneIntl(locale);
+
+      const payload = buildCouponNarrationPayload(
+        {
+          reference: coupon.reference,
+          category: coupon.category,
+          totalOdds: Number(coupon.totalOdds),
+          estimatedProbability: Number(coupon.estimatedProbability),
+          expectedValue: Number(coupon.expectedValue),
+          confidenceScore: Number(coupon.confidenceScore),
+          riskScore: Number(coupon.riskScore),
+          system: coupon.systemCoupon
+            ? {
+                label: coupon.systemCoupon.systemSizes.join(','),
+                legs: coupon.systemCoupon.baseSelectionCount,
+                columns: coupon.systemCoupon.columnCount,
+              }
+            : null,
+          selections: coupon.selections.map((s) => ({
+            homeTeam: s.match.homeTeam.name,
+            awayTeam: s.match.awayTeam.name,
+            league: s.match.league.name,
+            marketCode: s.marketCode,
+            selectionCode: s.selectionCode,
+            odds: Number(s.odds),
+            probability: Number(s.probability),
+            impliedProbability: Number(s.impliedProbability),
+            edge: Number(s.edge),
+          })),
+        },
+        t,
+        format,
+      );
 
       const outcome = await narrate(
         { entityType: 'coupon', entityId: coupon.id, locale, payload },

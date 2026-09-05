@@ -4,8 +4,6 @@ import {
   assertColumnCountWithinLimit,
   combinationCount,
   combinations,
-  formatSystemType,
-  parseSystemType,
 } from './combinatorics';
 
 describe('combinationCount', () => {
@@ -80,18 +78,5 @@ describe('combinations', () => {
 
   it('treats k=0 as a single empty column', () => {
     expect([...combinations(['a', 'b'], 0)]).toEqual([[]]);
-  });
-});
-
-describe('system type codec', () => {
-  it('round-trips', () => {
-    expect(parseSystemType(formatSystemType(3))).toBe(3);
-  });
-
-  it('rejects malformed types rather than guessing', () => {
-    expect(parseSystemType('SYSTEM')).toBeNull();
-    expect(parseSystemType('system_3')).toBeNull();
-    expect(parseSystemType('SYSTEM_0')).toBeNull();
-    expect(parseSystemType('SYSTEM_X')).toBeNull();
   });
 });

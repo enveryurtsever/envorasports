@@ -114,7 +114,7 @@ function overUnderSelections(
       code: overUnderCode(side, line),
       name: `${side === 'OVER' ? 'Over' : 'Under'} ${line.toFixed(1)}`,
       labelKey: side === 'OVER' ? 'selections.OVER' : 'selections.UNDER',
-      labelValues: { line: line.toFixed(1) },
+      labelValues: { line },
       parameters: { line, side, subject: market },
     })),
   );
@@ -278,7 +278,7 @@ export const MARKET_DEFINITIONS: MarketDefinition[] = [
           code: teamTotalCode(side, direction, line),
           name: `${side === 'HOME' ? 'Home' : 'Away'} ${direction === 'OVER' ? 'over' : 'under'} ${line.toFixed(1)}`,
           labelKey: direction === 'OVER' ? 'selections.TEAM_OVER' : 'selections.TEAM_UNDER',
-          labelValues: { team: side === 'HOME' ? 'home' : 'away', line: line.toFixed(1) },
+          labelValues: { team: side === 'HOME' ? 'home' : 'away', line },
           parameters: { side, direction, line },
         })),
       ),

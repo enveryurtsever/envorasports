@@ -844,6 +844,9 @@ model SystemCouponSetting {
 
   /// e.g. ["SYSTEM_2","SYSTEM_3","SYSTEM_4"]
   allowedSystemTypes String[] @map("allowed_system_types")
+  /// Which coupon categories also produce a system coupon. A high-variance
+  /// category benefits most: a system only needs k of n legs to return.
+  sourceCategories   String[] @map("source_categories")
   defaultSystemType  String   @map("default_system_type")
 
   minBaseSelections Int @map("min_base_selections")
@@ -1034,13 +1037,20 @@ model SystemCoupon {
   id       String @id @default(cuid())
   couponId String @unique @map("coupon_id")
 
-  systemType           String @map("system_type") // SYSTEM_3
+  systemType           String @map("system_type") // SYSTEM_4_5_6
   baseSelectionCount   Int    @map("base_selection_count") // n
-  systemSelectionCount Int    @map("system_selection_count") // k
-  columnCount          Int    @map("column_count") // C(n,k)
+  systemSelectionCount Int    @map("system_selection_count") // smallest k
+  /// Every column size on the slip. A Turkish system routinely combines
+  /// several — "4,5,6" over 8 legs is C(8,4)+C(8,5)+C(8,6) columns.
+  systemSizes          Int[]  @map("system_sizes")
+  columnCount          Int    @map("column_count") // sum of C(n,k)
 
   stakePerColumn Decimal @map("stake_per_column") @db.Decimal(14, 2)
   totalStake     Decimal @map("total_stake") @db.Decimal(14, 2)
+  /// What the coupon returns if every column lands: the sum of each column's
+  /// own odds times its stake. It cannot be derived from the accumulator odds,
+  /// so it is computed with the plan and stored.
+  maxReturn      Decimal @default(0) @map("max_return") @db.Decimal(16, 2)
   currency       String  @default("EUR")
 
   resultStatus      CouponResultStatus @default(PENDING) @map("result_status")
@@ -1066,6 +1076,8 @@ model SystemCouponColumn {
   id             String @id @default(cuid())
   systemCouponId String @map("system_coupon_id")
   columnIndex    Int    @map("column_index")
+  /// Legs in this column; a mixed system has columns of different sizes.
+  size           Int    @default(0)
 
   combinedOdds Decimal @map("combined_odds") @db.Decimal(18, 4)
   stake        Decimal @db.Decimal(14, 2)

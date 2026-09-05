@@ -91,6 +91,10 @@ export async function getSystemSettings(): Promise<SystemCouponSettings> {
     enabled: row.enabled,
     allowedSystemTypes: row.allowedSystemTypes,
     defaultSystemType: row.defaultSystemType,
+    sourceCategories:
+      row.sourceCategories.length > 0
+        ? row.sourceCategories
+        : DEFAULT_SYSTEM_SETTINGS.sourceCategories,
     minBaseSelections: row.minBaseSelections,
     maxBaseSelections: row.maxBaseSelections,
     stakePerColumn: Number(row.stakePerColumn),

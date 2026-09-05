@@ -17,7 +17,15 @@ export const narrationSchema = z.object({
       z.object({
         factor: z.string().min(2).max(60),
         impact: z.enum(['POSITIVE', 'NEGATIVE', 'NEUTRAL']),
-        confidence: z.number().min(0).max(1),
+        /**
+         * A 0-1 fraction. Models reliably answer "75" here instead, and
+         * throwing away an otherwise sound narration over the unit is a poor
+         * trade — anything above 1 is a percentage, so read it as one.
+         */
+        confidence: z.preprocess(
+          (value) => (typeof value === 'number' && value > 1 && value <= 100 ? value / 100 : value),
+          z.number().min(0).max(1),
+        ),
         explanation: z.string().min(10).max(400),
       }),
     )
@@ -41,7 +49,10 @@ export const NARRATION_RESPONSE_SCHEMA = {
         properties: {
           factor: { type: 'STRING' },
           impact: { type: 'STRING', enum: ['POSITIVE', 'NEGATIVE', 'NEUTRAL'] },
-          confidence: { type: 'NUMBER' },
+          confidence: {
+            type: 'NUMBER',
+            description: 'Fraction between 0 and 1, e.g. 0.75. Not a percentage.',
+          },
           explanation: { type: 'STRING' },
         },
         required: ['factor', 'impact', 'confidence', 'explanation'],
