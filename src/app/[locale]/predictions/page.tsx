@@ -4,6 +4,7 @@ import { getBulletinSchedule } from '@/lib/config/settings-service';
 import { bulletinWeek, todayInSchedule } from '@/lib/schedule/bulletin-schedule';
 import { dateKeyToUtcMidnight } from '@/lib/time/zoned';
 import { COUPON_CATEGORIES } from '@/lib/config/coupon-settings';
+import type { UnlockedCoupon } from '@/services/coupons/coupon-access';
 import {
   getCategoryView,
   getFreePreviewPolicy,
@@ -15,6 +16,29 @@ import { CouponCard } from '@/components/predictions/coupon-card';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Splits a category's coupons into its focus slates, in the order they first
+ * appear. A category with no focus groups comes back as a single unlabelled
+ * group, so the markup is the same either way.
+ */
+function groupByFocus(
+  coupons: UnlockedCoupon[],
+): Array<{ key: string; coupons: UnlockedCoupon[] }> {
+  const groups = new Map<string, UnlockedCoupon[]>();
+
+  for (const coupon of coupons) {
+    const key = coupon.strategy.startsWith('focus_') ? coupon.strategy : 'focus_other';
+    const existing = groups.get(key);
+    if (existing) existing.push(coupon);
+    else groups.set(key, [coupon]);
+  }
+
+  // Unlabelled first: the category's own coupons lead, the slates follow.
+  return [...groups.entries()]
+    .sort(([a], [b]) => (a === 'focus_other' ? -1 : b === 'focus_other' ? 1 : a.localeCompare(b)))
+    .map(([key, list]) => ({ key, coupons: list }));
+}
+
 export default async function PredictionsPage({
   params,
 }: {
@@ -25,6 +49,7 @@ export default async function PredictionsPage({
 
   const t = await getTranslations('predictions');
   const tCat = await getTranslations('categories');
+  const tFocus = await getTranslations('focus');
 
   const viewer = await getViewer();
   const schedule = await getBulletinSchedule();
@@ -60,13 +85,28 @@ export default async function PredictionsPage({
             description={tCat(`${view.category}.description`)}
           />
 
-          {view.coupons.length > 0 ? (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {view.coupons.map((coupon) => (
-                <CouponCard key={coupon.id} coupon={coupon} isPreview={view.access === 'preview'} />
-              ))}
-            </div>
-          ) : null}
+          {view.coupons.length > 0
+            ? groupByFocus(view.coupons).map(({ key, coupons }) => (
+                <div key={key} className="space-y-3">
+                  {/* Only labelled when a category actually has focus slates;
+                      one unlabelled group is just the category itself. */}
+                  {key !== 'focus_other' ? (
+                    <h3 className="text-sm font-semibold tracking-wide text-gold-light uppercase">
+                      {tFocus(key)}
+                    </h3>
+                  ) : null}
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                    {coupons.map((coupon) => (
+                      <CouponCard
+                        key={coupon.id}
+                        coupon={coupon}
+                        isPreview={view.access === 'preview'}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))
+            : null}
 
           {view.hidden && view.hidden.count > 0 ? (
             <LockedPanel

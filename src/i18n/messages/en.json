@@ -522,5 +522,10 @@
     "columns": "Columns",
     "stake": "Stake",
     "publicNote": "This list is public and can be checked against the prediction history."
+  },
+  "focus": {
+    "focus_htft": "HT/FT",
+    "focus_goals6": "6+ Goals",
+    "focus_other": "Mixed"
   }
 }

@@ -522,5 +522,10 @@
     "columns": "Kolon",
     "stake": "Tutar",
     "publicNote": "Bu liste herkese açıktır; tahmin geçmişiyle karşılaştırılabilir."
+  },
+  "focus": {
+    "focus_htft": "İY/MS",
+    "focus_goals6": "6+ Gol",
+    "focus_other": "Karma"
   }
 }

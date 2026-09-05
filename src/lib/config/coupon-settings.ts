@@ -153,6 +153,73 @@ export const SETTING_RANGES: Record<string, SettingRange> = {
 // the engine always loads the persisted values.
 // ---------------------------------------------------------------------------
 
+/**
+ * Market-specific slates inside a category.
+ *
+ * Surprise is one bucket of long shots, which makes it hard to read: an İY/MS
+ * coupon and a 6+ goals coupon are different bets with different reasoning. A
+ * focus group is the parent category's settings with the markets narrowed and
+ * its own count, so the section can be split without inventing a category and
+ * without a second set of thresholds to keep in step.
+ */
+export interface CouponFocusGroup {
+  /** Stable key, stored on the coupon as its strategy and used as a label key. */
+  key: string;
+  category: CouponCategory;
+  couponCount: number;
+  allowedMarkets: string[];
+  /**
+   * Overrides for the parent's thresholds, which a narrow market often cannot
+   * meet. The parent bars any leg under 25%, and six-or-more goals is a 5%
+   * event by nature — so under the parent's rules the slate is empty by
+   * construction, not for want of candidates.
+   */
+  minTotalOdds?: number;
+  minCombinedProbability?: number;
+  minSelections?: number;
+  maxSelections?: number;
+  minProbability?: number;
+  minConfidence?: number;
+  minEdge?: number;
+  minExpectedValue?: number;
+  maxRisk?: number;
+}
+
+export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
+  {
+    key: 'htft',
+    category: 'HIGH_VALUE',
+    couponCount: 3,
+    allowedMarkets: [MARKET.HALF_TIME_FULL_TIME],
+    // Half-time/full-time pairs are long on their own: two or three legs
+    // already clear three figures, so the parent's odds floor stands.
+    minSelections: 2,
+    maxSelections: 4,
+    // A 1/1 for a strong favourite is ~35%; a 2/1 turnaround is ~3%. The slate
+    // needs the whole range or it is only ever the favourites.
+    minProbability: 0.04,
+    minConfidence: 0.3,
+    minEdge: 0,
+    minExpectedValue: 0,
+    maxRisk: 0.95,
+  },
+  {
+    key: 'goals6',
+    category: 'HIGH_VALUE',
+    couponCount: 3,
+    allowedMarkets: [MARKET.TOTAL_GOALS_THRESHOLD],
+    minSelections: 2,
+    maxSelections: 4,
+    // Six or more goals lands in roughly one match in twenty. There is no
+    // honest way to ask for a 25% leg here.
+    minProbability: 0.02,
+    minConfidence: 0.25,
+    minEdge: 0,
+    minExpectedValue: 0,
+    maxRisk: 0.98,
+  },
+];
+
 export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySettings> = {
   HIGH_CONFIDENCE: {
     category: 'HIGH_CONFIDENCE',

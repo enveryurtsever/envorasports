@@ -66,6 +66,8 @@ export interface UnlockedCoupon {
   confidenceScore: number;
   riskScore: number;
   resultStatus: string;
+  /** Ranking function or focus-group key that produced it, e.g. focus_htft. */
+  strategy: string;
   /** Accumulator odds after void legs are neutralised; null until settled. */
   effectiveOdds: number | null;
   settledAt: Date | null;
@@ -145,6 +147,8 @@ const COUPON_SELECT = {
   confidenceScore: true,
   riskScore: true,
   resultStatus: true,
+  // The generator stores its strategy (or focus-group key) in `name`.
+  name: true,
   targetDate: true,
   firstKickoffUtc: true,
   lastKickoffUtc: true,
@@ -220,6 +224,7 @@ function toUnlocked(coupon: CouponRow): UnlockedCoupon {
     confidenceScore: Number(coupon.confidenceScore),
     riskScore: Number(coupon.riskScore),
     resultStatus: coupon.resultStatus,
+    strategy: coupon.name ?? '',
     effectiveOdds: coupon.effectiveOdds === null ? null : Number(coupon.effectiveOdds),
     settledAt: coupon.settledAt,
     targetDate: coupon.targetDate,

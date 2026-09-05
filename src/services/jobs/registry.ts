@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db/prisma';
 import { runJob, runKeyFor, type JobOutcome } from '@/lib/jobs/runner';
 import { getBulletinSchedule } from '@/lib/config/settings-service';
+import { DEFAULT_FOCUS_GROUPS } from '@/lib/config/coupon-settings';
 import {
   coverageWindow,
   decideRun,
@@ -130,6 +131,7 @@ export async function runBulletinPublication(request: JobRequest = {}): Promise<
       ]);
 
       const generation = await generateCoupons({
+        focusGroups: DEFAULT_FOCUS_GROUPS,
         window,
         timezone: schedule.timezone,
         grouping: schedule.grouping,

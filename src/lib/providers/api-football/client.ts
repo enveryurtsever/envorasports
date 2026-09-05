@@ -45,6 +45,8 @@ export function createApiFootballClient(config: {
     provider: API_FOOTBALL,
     baseUrl: config.baseUrl,
     headers: { 'x-apisports-key': config.apiKey },
+    // Free plan: ten a minute. Paced, not discovered by 429.
+    requestsPerMinute: 10,
     timeoutMs: 20_000,
     maxRetries: 3,
     quota: config.quota,

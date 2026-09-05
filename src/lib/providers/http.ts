@@ -9,6 +9,8 @@ export interface HttpClientOptions {
   provider: string;
   baseUrl: string;
   headers?: Record<string, string>;
+  /** Provider's per-minute cap, paced client-side rather than discovered by 429. */
+  requestsPerMinute?: number;
   timeoutMs?: number;
   maxRetries?: number;
   quota?: QuotaPolicy;
@@ -53,13 +55,45 @@ export class HttpClient {
   private readonly maxRetries: number;
   /** Latest credit balance the provider reported, if it reports one at all. */
   private lastQuotaRemaining: number | null = null;
+  /** Send times of recent requests, for the per-minute pace. */
+  private readonly recentRequests: number[] = [];
 
   constructor(private readonly options: HttpClientOptions) {
     this.timeoutMs = options.timeoutMs ?? 15_000;
     this.maxRetries = options.maxRetries ?? 3;
   }
 
+  /**
+   * Waits until the next request fits inside the per-minute allowance.
+   *
+   * The daily budget is not the only limit: API-Football's free plan also caps
+   * requests per minute, and exceeding it returns 429 with headers that read
+   * exactly like daily exhaustion. Twenty fixtures fetched back to back tripped
+   * it every time, and the whole day's work then looked like a spent budget.
+   * Pacing removes the confusion at its source — the calls simply wait their
+   * turn instead of being refused and misdiagnosed.
+   */
+  private async awaitPace(): Promise<void> {
+    const limit = this.options.requestsPerMinute;
+    if (!limit) return;
+
+    for (;;) {
+      const cutoff = Date.now() - 60_000;
+      while (this.recentRequests.length > 0 && (this.recentRequests[0] as number) <= cutoff) {
+        this.recentRequests.shift();
+      }
+      if (this.recentRequests.length < limit) break;
+
+      const oldest = this.recentRequests[0] as number;
+      await new Promise((resolve) => setTimeout(resolve, Math.max(250, oldest - cutoff)));
+    }
+
+    this.recentRequests.push(Date.now());
+  }
+
   async get<T>(request: RequestOptions): Promise<T> {
+    await this.awaitPace();
+
     if (this.options.quota) {
       await assertQuotaAvailable(this.options.quota, {
         cost: request.cost ?? 1,
@@ -101,12 +135,22 @@ export class HttpClient {
          * available. Per-minute exhaustion is a reason to wait a moment, never
          * a reason to stop for the day.
          */
-        const reportedRemaining = Number(
+        // Read as a string first: Number(null) is 0, so an absent header was
+        // being recorded as "nothing left" rather than "not reported", which is
+        // how a working provider came to look exhausted.
+        const remainingHeader =
           response.headers.get('x-requests-remaining') ??
-            response.headers.get('x-ratelimit-requests-remaining') ??
-            response.headers.get('x-ratelimit-remaining'),
-        );
-        const quotaRemaining = Number.isFinite(reportedRemaining) ? reportedRemaining : null;
+          response.headers.get('x-ratelimit-requests-remaining') ??
+          response.headers.get('x-ratelimit-remaining');
+        const reportedRemaining =
+          remainingHeader === null || remainingHeader.trim() === ''
+            ? Number.NaN
+            : Number(remainingHeader);
+        // A 429 reports the exhausted *window*, which for API-Football is the
+        // per-minute one. Recording it as the daily balance is what convinced
+        // the guard the day was spent while the provider still had 31 calls.
+        const quotaRemaining =
+          response.status !== 429 && Number.isFinite(reportedRemaining) ? reportedRemaining : null;
         if (quotaRemaining !== null) this.lastQuotaRemaining = quotaRemaining;
 
         if (!response.ok) {

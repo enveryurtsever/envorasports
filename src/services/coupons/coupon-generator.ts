@@ -7,6 +7,7 @@ import {
   DEFAULT_SCORING_WEIGHTS,
   type CouponCategory,
   type CouponCategorySettings,
+  type CouponFocusGroup,
   type CouponScoringWeights,
   type SystemCouponSettings,
 } from '@/lib/config/coupon-settings';
@@ -458,6 +459,8 @@ export interface GenerateOptions {
   settingsSnapshotId: string;
   categorySettings: Record<CouponCategory, CouponCategorySettings>;
   systemSettings: SystemCouponSettings;
+  /** Market-specific slates inside a category; empty means none. */
+  focusGroups?: CouponFocusGroup[];
   asOf?: Date;
 }
 
@@ -540,6 +543,60 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       produced: coupons.length,
       candidatePool: poolSize,
       shortfallReason,
+    });
+  }
+
+  /**
+   * Focus groups: market-specific slates inside a category.
+   *
+   * Surprise is one bucket of long shots, which is hard to read — an İY/MS
+   * coupon and a 6+ goals coupon are different bets. Each group runs the parent
+   * category's rules with the markets narrowed, and the coupons carry the group
+   * key as their strategy so the page can section them.
+   */
+  // Each group gets its own block of reference numbers; two groups in the same
+  // category starting from the same offset collide on the reference.
+  let focusOffset = 1000;
+
+  for (const group of options.focusGroups ?? []) {
+    const parent = options.categorySettings[group.category];
+    if (!parent || !parent.enabled || group.couponCount === 0) continue;
+
+    const settings: CouponCategorySettings = {
+      ...parent,
+      couponCount: group.couponCount,
+      allowedMarkets: group.allowedMarkets,
+      minTotalOdds: group.minTotalOdds ?? parent.minTotalOdds,
+      minCombinedProbability: group.minCombinedProbability ?? parent.minCombinedProbability,
+      minSelections: group.minSelections ?? parent.minSelections,
+      maxSelections: group.maxSelections ?? parent.maxSelections,
+      minProbability: group.minProbability ?? parent.minProbability,
+      minConfidence: group.minConfidence ?? parent.minConfidence,
+      minEdge: group.minEdge ?? parent.minEdge,
+      minExpectedValue: group.minExpectedValue ?? parent.minExpectedValue,
+      maxRisk: group.maxRisk ?? parent.maxRisk,
+    };
+
+    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys);
+
+    for (const [index, coupon] of built.coupons.entries()) {
+      await persistCoupon(
+        { ...coupon, strategy: `focus_${group.key}` },
+        run.id,
+        options,
+        focusOffset + index,
+      );
+      couponsGenerated++;
+    }
+
+    focusOffset += 100;
+
+    outcomes.push({
+      category: group.category,
+      requested: group.couponCount,
+      produced: built.coupons.length,
+      candidatePool: built.poolSize,
+      shortfallReason: built.shortfallReason,
     });
   }
 

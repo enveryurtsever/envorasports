@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { rebuildEloRatings } from '../src/services/features/elo';
 import { runPredictions } from '../src/services/predictions/prediction-engine';
 import { generateCoupons } from '../src/services/coupons/coupon-generator';
+import { DEFAULT_FOCUS_GROUPS } from '../src/lib/config/coupon-settings';
 import {
   captureSettingsSnapshot,
   getBulletinSchedule,
@@ -51,6 +52,7 @@ async function main() {
   ]);
 
   const generation = await generateCoupons({
+        focusGroups: DEFAULT_FOCUS_GROUPS,
     window,
     timezone: schedule.timezone,
     grouping: schedule.grouping,

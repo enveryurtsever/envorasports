@@ -7,6 +7,7 @@ import {
   MARKET,
   asianHandicapCode,
   goalsPlusCode,
+  htftCode,
   overUnderCode,
 } from '@/lib/markets/registry';
 import type { OddsProvider, ProviderBulletin, ProviderOdds, ProviderOddsEvent } from '../types';
@@ -66,7 +67,15 @@ const BET = {
   DOUBLE_CHANCE: 12,
   FIRST_HALF_WINNER: 13,
   ASIAN_HANDICAP: 4,
+  HALF_TIME_FULL_TIME: 7,
 } as const;
+
+/** "Home"/"Draw"/"Away" as the registry's 1 / X / 2. */
+const OUTCOME_CODE: Record<string, '1' | 'X' | '2'> = {
+  home: '1',
+  draw: 'X',
+  away: '2',
+};
 
 /**
  * Lines carried as OVER_UNDER. 5.5 and above are deliberately absent: "Over 5.5"
@@ -147,6 +156,23 @@ export function mapBetValue(betId: number, value: string | number): Mapped | nul
         marketCode: MARKET.OVER_UNDER,
         selectionCode: overUnderCode(parsed.side, parsed.line),
         parameters: { line: parsed.line, side: parsed.side, subject: 'total' },
+        handicap: 0,
+      };
+    }
+
+    case BET.HALF_TIME_FULL_TIME: {
+      // "Home/Draw" is leading at the break and drawing at the end. Both halves
+      // of the pair are needed, so an unrecognised side drops the whole value
+      // rather than guessing at the other.
+      const [firstHalf, fullTime] = raw.toLowerCase().split('/').map((part) => part.trim());
+      const half = firstHalf ? OUTCOME_CODE[firstHalf] : undefined;
+      const full = fullTime ? OUTCOME_CODE[fullTime] : undefined;
+      if (!half || !full) return null;
+
+      return {
+        marketCode: MARKET.HALF_TIME_FULL_TIME,
+        selectionCode: htftCode(half, full),
+        parameters: { half, full },
         handicap: 0,
       };
     }
@@ -279,6 +305,8 @@ export function createApiFootballOddsProvider(config: {
     maxRetries: 3,
     quota: config.quota,
     headers: { 'x-apisports-key': config.apiKey },
+    // Free plan: ten a minute, shared with the fixture client's allowance.
+    requestsPerMinute: 10,
   });
 
   async function fetchFixture(fixtureId: string, capturedAt: Date): Promise<ProviderOddsEvent | null> {
