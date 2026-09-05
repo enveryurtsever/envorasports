@@ -116,21 +116,14 @@ export function handicapDuplicatesMatchResult(handicap: number): boolean {
 }
 
 /**
- * Says what a handicap actually asks for.
+ * Handicaps read as a Turkish bulletin writes them: HMS 1 / HMS 2 with the line.
  *
- * "Rodez -1" tells a reader nothing; "Rodez wins by 2+" tells them exactly what
- * has to happen. Half-lines can be stated exactly in a few words. Whole lines
- * cannot — they hand the stake back when the margin lands on the line — so they
- * keep the number and are not offered on a coupon, where a one-line chip has no
- * room to explain a refund.
+ * Spelling the rule out — "wins by 2+", "does not lose by 2+" — is accurate but
+ * not the phrasing a reader already knows, and it is long enough to crowd the
+ * chip. "HMS 1 (+1,5)" is the standard notation and says the same thing.
  */
-function handicapLabel(handicap: number): { labelKey: string } {
-  if (handicapPushes(handicap)) return { labelKey: 'selections.AH' };
-  if (handicap === -0.5) return { labelKey: 'selections.AH_WIN' };
-  if (handicap === 0.5) return { labelKey: 'selections.AH_NOT_LOSE' };
-  return handicap < 0
-    ? { labelKey: 'selections.AH_WIN_BY' }
-    : { labelKey: 'selections.AH_NOT_LOSE_BY' };
+function handicapLabel(side: 'HOME' | 'AWAY'): { labelKey: string } {
+  return { labelKey: side === 'HOME' ? 'selections.AH_HOME' : 'selections.AH_AWAY' };
 }
 export const CORNER_LINES = [8.5, 9.5, 10.5, 11.5] as const;
 export const CARD_LINES = [2.5, 3.5, 4.5, 5.5] as const;
@@ -293,11 +286,11 @@ export const MARKET_DEFINITIONS: MarketDefinition[] = [
       (['HOME', 'AWAY'] as const).map((side) => ({
         code: asianHandicapCode(side, handicap),
         name: `${side === 'HOME' ? 'Home' : 'Away'} ${handicap > 0 ? '+' : ''}${handicap}`,
-        ...handicapLabel(handicap),
+        ...handicapLabel(side),
         labelValues: {
           team: side === 'HOME' ? 'home' : 'away',
-          handicap: `${handicap > 0 ? '+' : ''}${handicap}`,
-          margin: Math.ceil(Math.abs(handicap)),
+          sign: handicap > 0 ? '+' : '-',
+          handicap: Math.abs(handicap),
         },
         parameters: { side, handicap },
       })),

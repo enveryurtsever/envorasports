@@ -241,6 +241,8 @@ export function buildCoupon(
    * is allowed, but the combination is not.
    */
   offset = 0,
+  /** Keeps a category's coupons on different fixtures; see `eligible` below. */
+  excludeUsedMatches = false,
 ): BuiltCoupon | null {
   const ranked = [...pool].sort((a, b) => {
     // Push the coupon toward matches and markets the earlier coupons did not
@@ -250,7 +252,20 @@ export function buildCoupon(
     return strategy.rank(b) + noveltyB - (strategy.rank(a) + noveltyA);
   });
 
-  const available = offset > 0 ? ranked.slice(offset) : ranked;
+  /**
+   * Matches an earlier coupon in this category already used.
+   *
+   * `usedMatches` had only ever nudged the ranking, so with a wide bulletin the
+   * same fixture still landed in three of five Banko coupons — the reader sees
+   * one match, priced three ways, presented as three tips. Excluded outright
+   * here; the caller retries without the exclusion only if the category cannot
+   * otherwise be filled.
+   */
+  const eligible = excludeUsedMatches
+    ? ranked.filter((candidate) => !usedMatches.has(candidate.matchId))
+    : ranked;
+
+  const available = offset > 0 ? eligible.slice(offset) : eligible;
 
   const chosen: Candidate[] = [];
   const chosenMatches = new Set<string>();
@@ -359,6 +374,9 @@ export function expectedColumnProbability(probabilities: number[], k: number): n
   return geometricMean ** k;
 }
 
+/** How many extra coupons to build so the likeliest can be chosen. */
+const OVERBUILD = 3;
+
 /** Two coupons sharing most of their legs are one coupon (§32). */
 function isDistinct(coupon: BuiltCoupon, existing: BuiltCoupon[]): boolean {
   const ids = new Set(coupon.selections.map((s) => s.predictionId));
@@ -409,7 +427,7 @@ export function buildCategoryCoupons(
     const maxAttempts = STRATEGIES.length * 5;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (coupons.length >= settings.couponCount) break;
+      if (coupons.length >= settings.couponCount * OVERBUILD) break;
       if (coupons.filter((c) => c.targetDate === groupKey).length >= perGroup) break;
 
       const strategy = STRATEGIES[attempt % STRATEGIES.length]!;
@@ -424,6 +442,7 @@ export function buildCategoryCoupons(
         usedMarkets,
         weights,
         offset,
+        true,
       );
       if (!coupon || !isDistinct(coupon, coupons)) continue;
 
@@ -435,15 +454,17 @@ export function buildCategoryCoupons(
     }
   }
 
-  // Any day may fill what the per-day share left over, so the count is only
-  // ever short because the candidates genuinely were not there.
-  if (coupons.length < settings.couponCount) {
+  // Build past the requested count so there is something to choose between,
+  // then keep the likeliest. Any day may fill what the per-day share left over.
+  const target = settings.couponCount * OVERBUILD;
+
+  if (coupons.length < target) {
     for (const groupKey of activeKeys) {
-      if (coupons.length >= settings.couponCount) break;
+      if (coupons.length >= target) break;
       const groupPool = pool.filter((c) => c.targetDate === groupKey);
 
       for (let attempt = 0; attempt < STRATEGIES.length * 5; attempt++) {
-        if (coupons.length >= settings.couponCount) break;
+        if (coupons.length >= target) break;
 
         const coupon = buildCoupon(
           groupPool,
@@ -466,14 +487,49 @@ export function buildCategoryCoupons(
     }
   }
 
+  /**
+   * Rank by the chance the coupon lands and keep the best.
+   *
+   * The strategies produce coupons in the order they were tried, which is an
+   * artefact of the ranking function rather than a judgement. What a reader
+   * should be shown first is the one most likely to come in, so the slate is
+   * built past the requested count and then cut down to the likeliest.
+   */
+  coupons.sort((a, b) => Number(b.estimatedProbability) - Number(a.estimatedProbability));
+
+  /**
+   * Take the likeliest coupons that do not repeat a fixture.
+   *
+   * Ranking alone puts the same safe legs at the top of every coupon, so a
+   * category of five showed one match three times, priced three ways. Selection
+   * happens after ranking: walk down the list and skip a coupon whose fixtures
+   * are already spoken for. Repeats are only allowed at the end, if the slate
+   * cannot be filled without them — an honest shortfall beats a padded one, but
+   * a duplicate beats an empty slot.
+   */
+  const chosen: BuiltCoupon[] = [];
+  const spokenFor = new Set<string>();
+
+  for (const coupon of coupons) {
+    if (chosen.length >= settings.couponCount) break;
+    if (coupon.selections.some((s) => spokenFor.has(s.matchId))) continue;
+    chosen.push(coupon);
+    coupon.selections.forEach((s) => spokenFor.add(s.matchId));
+  }
+
+  for (const coupon of coupons) {
+    if (chosen.length >= settings.couponCount) break;
+    if (!chosen.includes(coupon)) chosen.push(coupon);
+  }
+
   const shortfallReason =
-    coupons.length >= settings.couponCount
+    chosen.length >= settings.couponCount
       ? null
-      : coupons.length === 0
+      : chosen.length === 0
         ? 'no_valid_combination_within_odds_band'
         : 'insufficient_distinct_candidates';
 
-  return { coupons: coupons.slice(0, settings.couponCount), poolSize: pool.length, shortfallReason };
+  return { coupons: chosen, poolSize: pool.length, shortfallReason };
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +672,34 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       maxRisk: group.maxRisk ?? parent.maxRisk,
     };
 
+    if (group.system) {
+      // Played as a system: the same narrowed markets, but returning on k of n
+      // rather than only when every leg lands.
+      const { outcome } = await generateSystemCoupons(
+        candidates,
+        matrix,
+        options,
+        run.id,
+        weights,
+        groupKeys,
+        group.category,
+        focusOffset,
+        {
+          settings,
+          couponCount: group.couponCount,
+          systemType: group.system.systemType,
+          minBaseSelections: group.system.minBaseSelections,
+          maxBaseSelections: group.system.maxBaseSelections,
+          minCombinedProbability: group.minCombinedProbability,
+          strategyLabel: `focus_${group.key}`,
+        },
+      );
+      couponsGenerated += outcome.produced;
+      outcomes.push(outcome);
+      focusOffset += 100;
+      continue;
+    }
+
     const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys);
 
     for (const [index, coupon] of built.coupons.entries()) {
@@ -754,9 +838,35 @@ async function generateSystemCoupons(
   groupKeys: LocalDateKey[],
   sourceCategory: CouponCategory,
   referenceOffset: number,
+  /**
+   * Lets a focus slate be played as a system too. Surprise coupons are all
+   * systems now: a straight seven-leg accumulator returns nothing unless every
+   * leg lands, while the same seven as a 3/4/5 returns on three — the same
+   * selections, a real chance of a return instead of a notional one.
+   */
+  override: {
+    settings?: CouponCategorySettings;
+    couponCount?: number;
+    systemType?: string;
+    minBaseSelections?: number;
+    maxBaseSelections?: number;
+    minCombinedProbability?: number;
+    strategyLabel?: string;
+  } = {},
 ): Promise<{ outcome: CategoryOutcome; produced: number }> {
-  const system = options.systemSettings;
-  const settings = options.categorySettings[sourceCategory];
+  const baseSystem = options.systemSettings;
+  const system = {
+    ...baseSystem,
+    couponCount: override.couponCount ?? baseSystem.couponCount,
+    defaultSystemType: override.systemType ?? baseSystem.defaultSystemType,
+    minBaseSelections: override.minBaseSelections ?? baseSystem.minBaseSelections,
+    maxBaseSelections: override.maxBaseSelections ?? baseSystem.maxBaseSelections,
+    // A 6+ goals system cannot clear the general slate's floor: two of four
+    // five-percent events is a low number however it is played.
+    minCombinedProbability:
+      override.minCombinedProbability ?? baseSystem.minCombinedProbability,
+  };
+  const settings = override.settings ?? options.categorySettings[sourceCategory];
 
   const outcome: CategoryOutcome = {
     category: sourceCategory,
@@ -888,7 +998,7 @@ async function generateSystemCoupons(
       // is filed under Surprise rather than in a separate bucket.
       category: sourceCategory,
       targetDate: groupKey,
-      strategy: `system_${plan.systemLabel}`,
+      strategy: override.strategyLabel ?? `system_${plan.systemLabel}`,
       selections: base,
       totalOdds: toOdds(totalOdds),
       estimatedProbability,

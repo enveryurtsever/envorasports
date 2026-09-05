@@ -410,10 +410,8 @@
     "home": "Ev",
     "away": "Dep",
     "draw": "Beraberlik",
-    "AH_WIN": "{team} Kazanır",
-    "AH_NOT_LOSE": "{team} Kaybetmez",
-    "AH_WIN_BY": "{team} {margin}+ Fark Kazanır",
-    "AH_NOT_LOSE_BY": "{team} {margin}+ Fark Kaybetmez"
+    "AH_HOME": "HMS 1 ({sign}{handicap, number})",
+    "AH_AWAY": "HMS 2 ({sign}{handicap, number})"
   },
   "disclaimer": {
     "short": "Tahminler istatistiksel öngörülerdir; sonuç garantisi vermez.",

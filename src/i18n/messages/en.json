@@ -410,10 +410,8 @@
     "home": "Home",
     "away": "Away",
     "draw": "Draw",
-    "AH_WIN": "{team} to win",
-    "AH_NOT_LOSE": "{team} not to lose",
-    "AH_WIN_BY": "{team} to win by {margin}+",
-    "AH_NOT_LOSE_BY": "{team} not to lose by {margin}+"
+    "AH_HOME": "AH 1 ({sign}{handicap, number})",
+    "AH_AWAY": "AH 2 ({sign}{handicap, number})"
   },
   "disclaimer": {
     "short": "Predictions are statistical estimates, not guarantees of outcomes.",

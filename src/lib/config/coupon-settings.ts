@@ -183,6 +183,12 @@ export interface CouponFocusGroup {
   minEdge?: number;
   minExpectedValue?: number;
   maxRisk?: number;
+  /**
+   * Play the slate as a system rather than a straight accumulator. A seven-leg
+   * accumulator returns nothing unless all seven land; the same seven as a
+   * 3/4/5 returns on three. Same selections, a real chance of a return.
+   */
+  system?: { systemType: string; minBaseSelections: number; maxBaseSelections: number };
 }
 
 export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
@@ -202,6 +208,8 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     minEdge: 0,
     minExpectedValue: 0,
     maxRisk: 0.95,
+    // Five İY/MS legs needing three is a far better bet than four needing four.
+    system: { systemType: 'SYSTEM_2_3', minBaseSelections: 4, maxBaseSelections: 6 },
   },
   {
     key: 'goals6',
@@ -217,6 +225,10 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     minEdge: 0,
     minExpectedValue: 0,
     maxRisk: 0.98,
+    // 6+ goals is rare enough that asking for two of four is already ambitious,
+    // and no way of playing it produces a high number.
+    minCombinedProbability: 0.002,
+    system: { systemType: 'SYSTEM_2_3', minBaseSelections: 4, maxBaseSelections: 6 },
   },
 ];
 
@@ -224,7 +236,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
   HIGH_CONFIDENCE: {
     category: 'HIGH_CONFIDENCE',
     enabled: true,
-    couponCount: 5,
+    couponCount: 3,
     minTotalOdds: 1.10,
     maxTotalOdds: 4,
     minSelections: 2,
@@ -268,7 +280,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     category: 'BALANCED_PICKS',
     enabled: true,
     // §30's example default range.
-    couponCount: 5,
+    couponCount: 3,
     minTotalOdds: 1.75,
     maxTotalOdds: 6,
     minSelections: 2,
@@ -287,7 +299,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
   HIGH_VALUE: {
     category: 'HIGH_VALUE',
     enabled: true,
-    couponCount: 5,
+    couponCount: 3,
     // The point of this category is the long shot, so the floor is the target:
     // a coupon that cannot reach 100.0 is not a Surprise, it is a Balanced one
     // wearing the label. Reaching it takes five or six legs, which is why the
