@@ -2,8 +2,12 @@ import { HttpClient } from '../http';
 import type { QuotaPolicy } from '../quota';
 import { createLogger } from '@/lib/logging/logger';
 import {
+  HALF_TIME_CORRECT_SCORE_MAX,
+  HALF_TIME_GOAL_LINES,
   MARKET,
   asianHandicapCode,
+  halfTimeCorrectScoreCode,
+  halfTimeOverUnderCode,
   overUnderCode,
 } from '@/lib/markets/registry';
 import type {
@@ -63,6 +67,25 @@ interface RawSport {
  */
 export const DEFAULT_MARKETS = ['h2h', 'totals', 'spreads'] as const;
 export const DEFAULT_REGIONS = ['eu'] as const;
+
+/**
+ * The half-time markets, and where they can be asked for.
+ *
+ * These are served only by the per-event endpoint — the competition-wide one
+ * answers 422 "Markets not supported by this endpoint" and, usefully, charges
+ * nothing for saying so. They are what the HAYAL signal is stated in.
+ *
+ * `btts_both_halves` is not in this list because the provider does not offer
+ * it. The two halves are quoted separately and their product is not the same
+ * bet: the halves are positively correlated, so multiplying them understates
+ * the true chance and therefore overstates the price.
+ */
+export const HALF_TIME_MARKETS = [
+  'correct_score_h1',
+  'totals_h1',
+  'btts_h1',
+  'btts_h2',
+] as const;
 
 /**
  * The Odds API prices credits as `markets x regions` per call. Getting this
@@ -131,6 +154,85 @@ function normaliseOutcome(
         marketCode: MARKET.BTTS,
         selectionCode: yes ? 'BTTS_YES' : 'BTTS_NO',
         parameters: { value: yes },
+        handicap: 0,
+      };
+    }
+
+    /**
+     * Half-time markets, served only by the per-event endpoint.
+     *
+     * These are what the HAYAL signal is stated in — the half-time score being
+     * 2-2, and goals before the break. `btts_h1` and `btts_h2` are the two
+     * halves priced separately; the combined "both halves" bet is not offered
+     * here and is deliberately not synthesised from them.
+     */
+    case 'btts_h1':
+    case 'btts_h2': {
+      const yes = name.toLowerCase() === 'yes';
+      const no = name.toLowerCase() === 'no';
+      if (!yes && !no) return null;
+
+      const firstHalf = marketKey === 'btts_h1';
+      return {
+        marketCode: firstHalf ? MARKET.BTTS_FIRST_HALF : MARKET.BTTS_SECOND_HALF,
+        selectionCode: `${firstHalf ? 'BTTS_H1' : 'BTTS_H2'}_${yes ? 'YES' : 'NO'}`,
+        parameters: { value: yes },
+        handicap: 0,
+      };
+    }
+
+    case 'correct_score_h1': {
+      /**
+       * The outcome is written as "Everton:2|Manchester United:2" — team names
+       * rather than sides, so the home team has to be identified by name. A
+       * name that does not match either side is dropped rather than assumed to
+       * be the home one, because guessing here silently inverts the score.
+       */
+      const parts = name.split('|').map((part) => part.trim());
+      if (parts.length !== 2) return null;
+
+      const parsed = parts.map((part) => {
+        const separator = part.lastIndexOf(':');
+        if (separator < 0) return null;
+        const team = part.slice(0, separator).trim();
+        const goals = Number(part.slice(separator + 1).trim());
+        return Number.isInteger(goals) ? { team, goals } : null;
+      });
+      if (parsed.some((entry) => entry === null)) return null;
+
+      const entries = parsed as Array<{ team: string; goals: number }>;
+      const home = entries.find((entry) => entry.team === homeTeam) ?? null;
+      const away = entries.find((entry) => entry.team === awayTeam) ?? null;
+      if (!home || !away) return null;
+
+      // Outside the seeded grid there is no selection to hang the price on.
+      if (home.goals > HALF_TIME_CORRECT_SCORE_MAX || away.goals > HALF_TIME_CORRECT_SCORE_MAX) {
+        return null;
+      }
+
+      return {
+        marketCode: MARKET.HALF_TIME_CORRECT_SCORE,
+        selectionCode: halfTimeCorrectScoreCode(home.goals, away.goals),
+        parameters: { home: home.goals, away: away.goals },
+        handicap: 0,
+      };
+    }
+
+    case 'totals_h1': {
+      if (outcome.point === undefined) return null;
+      const side = name.toLowerCase() === 'over' ? 'OVER' : name.toLowerCase() === 'under' ? 'UNDER' : null;
+      if (!side) return null;
+
+      // Asian half-time lines like 1.25 have no seeded selection; they are a
+      // different bet from 1.5 and must not be rounded onto it.
+      if (!HALF_TIME_GOAL_LINES.includes(outcome.point as (typeof HALF_TIME_GOAL_LINES)[number])) {
+        return null;
+      }
+
+      return {
+        marketCode: MARKET.HALF_TIME_OVER_UNDER,
+        selectionCode: halfTimeOverUnderCode(side, outcome.point),
+        parameters: { line: outcome.point, side },
         handicap: 0,
       };
     }
@@ -227,6 +329,29 @@ export function createTheOddsApiProvider(config: {
         .map((s) => ({ key: s.key, title: s.title, active: s.active }));
     },
 
+    /**
+     * Upcoming events for a competition, with no prices attached.
+     *
+     * The provider does not meter this endpoint, so enumerating a whole
+     * weekend's fixtures across every competition costs nothing. That is what
+     * makes reconciling our fixtures to their event ids affordable — and the
+     * per-event market fetch impossible without.
+     */
+    async listEvents(competitionKey: string): Promise<ProviderOddsEvent[]> {
+      const capturedAt = new Date();
+      try {
+        const raw = await http.get<RawEvent[]>({
+          path: `/sports/${competitionKey}/events`,
+          query: { apiKey: config.apiKey, dateFormat: 'iso' },
+          cost: 0,
+        });
+        return raw.map((event) => mapEvent(event, capturedAt));
+      } catch (error) {
+        log.warn('event list failed, continuing', { competition: competitionKey, error: String(error) });
+        return [];
+      }
+    },
+
     async getOdds(eventExternalId: string, competitionKey: string): Promise<ProviderOdds[]> {
       const capturedAt = new Date();
       const raw = await http.get<RawEvent>({
@@ -241,6 +366,44 @@ export function createTheOddsApiProvider(config: {
         cost: creditCost(markets, regions),
       });
       return mapEvent(raw, capturedAt).odds;
+    },
+
+    /**
+     * One event's half-time markets.
+     *
+     * Costs `markets x regions` credits per event — four on the current list —
+     * against a 500-credit month, so the caller decides which fixtures are
+     * worth it rather than this looping over a slate.
+     */
+    async getEventMarkets(
+      competitionKey: string,
+      eventExternalId: string,
+      requested: readonly string[] = HALF_TIME_MARKETS,
+    ): Promise<ProviderOddsEvent | null> {
+      const capturedAt = new Date();
+      try {
+        const raw = await http.get<RawEvent>({
+          path: `/sports/${competitionKey}/events/${eventExternalId}/odds`,
+          query: {
+            apiKey: config.apiKey,
+            regions: regions.join(','),
+            markets: requested.join(','),
+            oddsFormat: 'decimal',
+            dateFormat: 'iso',
+          },
+          cost: creditCost(requested, regions),
+          // The scarcer budget of the two; nothing here outranks settlement.
+          respectReserve: true,
+        });
+        return mapEvent(raw, capturedAt);
+      } catch (error) {
+        log.warn('event market fetch failed', {
+          competition: competitionKey,
+          event: eventExternalId,
+          error: String(error),
+        });
+        return null;
+      }
     },
 
     async getBulletin(competitionKeys: string[]): Promise<ProviderBulletin> {

@@ -22,6 +22,7 @@ import { runPredictions } from '../predictions/prediction-engine';
 import { generateCoupons } from '../coupons/coupon-generator';
 import { narrateWindow } from '../narration/narration-job';
 import { detectHayalSignals } from '../hayal/signal';
+import { syncHayalOdds } from '../hayal/odds-sync';
 import { generateHayalCoupons } from '../hayal/coupon-builder';
 import { gradeHayalSignals } from '../hayal/stats';
 import {
@@ -359,6 +360,12 @@ export async function runHayal(): Promise<JobOutcome> {
     lockKey: 'hayal',
     lockTtlMs: 10 * 60 * 1000,
     handler: async ({ logger, heartbeat }) => {
+      // The signal markets live behind The Odds API's per-event endpoint, on a
+      // separate budget from the fixture provider — so a spent football quota
+      // does not stop HAYAL, and vice versa.
+      const odds = await syncHayalOdds(window);
+      await heartbeat();
+
       const signals = await detectHayalSignals({
         from: window.startUtc,
         to: window.endUtc,
@@ -411,6 +418,8 @@ export async function runHayal(): Promise<JobOutcome> {
       });
 
       logger.info('hayal cycle complete', {
+        creditsSpent: odds.creditsSpent,
+        reconciled: odds.fixturesReconciled,
         candidates: signals.candidates,
         premium: signals.premium,
         coupons: coupons.couponsGenerated,
@@ -420,7 +429,7 @@ export async function runHayal(): Promise<JobOutcome> {
       return {
         itemsProcessed: coupons.couponsGenerated,
         itemsFailed: 0,
-        metadata: { signals, coupons, graded },
+        metadata: { odds, signals, coupons, graded },
       };
     },
   });

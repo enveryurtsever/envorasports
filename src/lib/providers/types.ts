@@ -234,6 +234,26 @@ export interface OddsProvider {
    * of magnitude cheaper than asking fixture by fixture. Optional: a provider
    * addressed only by competition has nothing to implement.
    */
+  /**
+   * One event's markets, for markets a provider only serves per event.
+   *
+   * The Odds API keeps the half-time markets — the half-time score, first-half
+   * goals, both-teams-to-score per half — behind the per-event endpoint. They
+   * are the only place the HAYAL signal can be read from, and they are priced
+   * per event, so the caller chooses the fixtures rather than sweeping a slate.
+   */
+  /**
+   * Upcoming fixtures for a competition, without prices. Free on The Odds API,
+   * which is what makes reconciling our fixtures to its event ids affordable.
+   */
+  listEvents?(competitionKey: string): Promise<ProviderOddsEvent[]>;
+
+  getEventMarkets?(
+    competitionKey: string,
+    eventExternalId: string,
+    markets?: readonly string[],
+  ): Promise<ProviderOddsEvent | null>;
+
   getBulletinByDate?(date: string, maxRequests: number): Promise<ProviderBulletin>;
   /**
    * One competition's fixtures on one date — the cheapest shape of all when the

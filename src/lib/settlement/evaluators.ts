@@ -130,6 +130,26 @@ const halfTimeOverUnder: MarketSettlementEvaluator = {
   },
 };
 
+/** Both sides score before the break. Priced separately from the combined bet. */
+const bttsFirstHalf: MarketSettlementEvaluator = {
+  marketCode: MARKET.BTTS_FIRST_HALF,
+  evaluate(selection, result) {
+    if (result.halfTimeHomeScore === null || result.halfTimeAwayScore === null) return 'PENDING';
+    const both = result.halfTimeHomeScore > 0 && result.halfTimeAwayScore > 0;
+    return won(both === (selection.parameters?.value === true));
+  },
+};
+
+const bttsSecondHalf: MarketSettlementEvaluator = {
+  marketCode: MARKET.BTTS_SECOND_HALF,
+  evaluate(selection, result) {
+    const halves = halfGoals(result);
+    if (halves === null) return 'PENDING';
+    const both = halves.secondHalf.home > 0 && halves.secondHalf.away > 0;
+    return won(both === (selection.parameters?.value === true));
+  },
+};
+
 const btts: MarketSettlementEvaluator = {
   marketCode: MARKET.BTTS,
   evaluate(selection, result) {
@@ -277,6 +297,8 @@ export const EVALUATORS: MarketSettlementEvaluator[] = [
   corners,
   cards,
   bttsBothHalves,
+  bttsFirstHalf,
+  bttsSecondHalf,
   halfTimeCorrectScore,
   halfTimeOverUnder,
 ];

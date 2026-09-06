@@ -43,6 +43,16 @@ export const MARKET = {
   BTTS_BOTH_HALVES: 'BTTS_BOTH_HALVES',
   HALF_TIME_CORRECT_SCORE: 'HALF_TIME_CORRECT_SCORE',
   HALF_TIME_OVER_UNDER: 'HALF_TIME_OVER_UNDER',
+  /**
+   * Both teams scoring within one half, priced per half.
+   *
+   * These are real, separately quoted markets — not the combined
+   * BTTS_BOTH_HALVES above. The two must never be conflated: the combined bet
+   * needs both halves at once, and multiplying the halves assumes they are
+   * independent, which they plainly are not.
+   */
+  BTTS_FIRST_HALF: 'BTTS_FIRST_HALF',
+  BTTS_SECOND_HALF: 'BTTS_SECOND_HALF',
 } as const;
 
 export type MarketCode = (typeof MARKET)[keyof typeof MARKET];
@@ -336,6 +346,26 @@ export const MARKET_DEFINITIONS: MarketDefinition[] = [
         labelKey: 'selections.BTTS_BOTH_HALVES_NO',
         parameters: { value: false },
       },
+    ],
+  },
+  {
+    code: MARKET.BTTS_FIRST_HALF,
+    name: 'Both Teams to Score - First Half',
+    category: 'BOTH_TEAMS',
+    description: 'Both sides score before half time.',
+    selections: [
+      { code: 'BTTS_H1_YES', name: 'Yes', labelKey: 'selections.BTTS_H1_YES', parameters: { value: true } },
+      { code: 'BTTS_H1_NO', name: 'No', labelKey: 'selections.BTTS_H1_NO', parameters: { value: false } },
+    ],
+  },
+  {
+    code: MARKET.BTTS_SECOND_HALF,
+    name: 'Both Teams to Score - Second Half',
+    category: 'BOTH_TEAMS',
+    description: 'Both sides score after half time.',
+    selections: [
+      { code: 'BTTS_H2_YES', name: 'Yes', labelKey: 'selections.BTTS_H2_YES', parameters: { value: true } },
+      { code: 'BTTS_H2_NO', name: 'No', labelKey: 'selections.BTTS_H2_NO', parameters: { value: false } },
     ],
   },
   {
