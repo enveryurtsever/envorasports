@@ -238,7 +238,15 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     // column's chance comes down with it — the number the reader sees is the
     // chance the coupon returns, and that is reported as it falls out.
     minCombinedProbability: 0.005,
-    system: { systemType: 'SYSTEM_3_4_5', minBaseSelections: 5, maxBaseSelections: 7 },
+    /**
+     * Five or six legs, played 3/4/5.
+     *
+     * Seven legs produced a 91-column slip whose total return only a
+     * spreadsheet could read, and a column count that size is not a coupon a
+     * reader plays — it is a number. Six legs at 3/4/5 is 41 columns, which is
+     * still a real system and still legible.
+     */
+    system: { systemType: 'SYSTEM_3_4_5', minBaseSelections: 5, maxBaseSelections: 6 },
   },
   {
     key: 'goals6',
@@ -261,7 +269,9 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
      * actually comes to rather than what would be nice.
      */
     minCombinedProbability: 0.0005,
-    system: { systemType: 'SYSTEM_3_4', minBaseSelections: 6, maxBaseSelections: 8 },
+    // Same shape as the İY/MS slate: five or six legs, played 3/4/5. Eight legs
+    // was the widest slip in the product and the least readable.
+    system: { systemType: 'SYSTEM_3_4_5', minBaseSelections: 5, maxBaseSelections: 6 },
   },
 ];
 
@@ -392,17 +402,23 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
 
 export const DEFAULT_SYSTEM_SETTINGS: SystemCouponSettings = {
   enabled: true,
-  // Turkish slips combine sizes: "Sistem 3,4,5" over 8 legs is
-  // C(8,3)+C(8,4)+C(8,5) = 182 columns on one coupon.
-  // Threes and up. A two-of-n fills half its columns with pairs, which returns
-  // little and costs the same per column as a three.
-  allowedSystemTypes: ['SYSTEM_3_4', 'SYSTEM_3_4_5', 'SYSTEM_4_5_6'],
+  /**
+   * Turkish slips combine sizes: "Sistem 3,4,5" over six legs is
+   * C(6,3)+C(6,4)+C(6,5) = 41 columns on one coupon.
+   *
+   * Eight legs at 3,4,5 is 182 columns, which is not a slip anyone reads — the
+   * total return runs to six figures and the reader cannot see what has to
+   * happen for it to pay. Six is the ceiling, and only threes-and-up are
+   * offered: a two-of-n fills half its columns with pairs, which returns little
+   * and costs the same per column as a three.
+   */
+  allowedSystemTypes: ['SYSTEM_3_4_5', 'SYSTEM_4_5_6'],
   defaultSystemType: 'SYSTEM_3_4_5',
   // A system is a way of playing a set of picks, not a separate product, so it
   // is generated from a real category's pool rather than its own.
   sourceCategories: ['HIGH_VALUE'],
-  minBaseSelections: 6,
-  maxBaseSelections: 8,
+  minBaseSelections: 5,
+  maxBaseSelections: 6,
   stakePerColumn: 1,
   maxTotalStake: 5000,
   // The operator's own currency: system stakes are real money in TL, not a

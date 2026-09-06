@@ -25,6 +25,16 @@ async function main() {
   console.log(`  ROI               : ${pct(summary.roi)}`);
   console.log(`  max drawdown      : ${summary.maxDrawdown.toFixed(2)}`);
   console.log(`  Brier / log loss  : ${summary.brierScore?.toFixed(4)} / ${summary.logLoss?.toFixed(4)}`);
+  console.log('\n  per model (scored on every graded selection it had a view on)');
+  console.log('    source     n      Brier   logLoss   bets   acc      ROI');
+  for (const m of summary.perModel) {
+    console.log(
+      `    ${m.source.padEnd(9)} ${String(m.sampleSize).padStart(6)}  ` +
+        `${m.brierScore?.toFixed(4) ?? '  —   '}  ${m.logLoss?.toFixed(4) ?? '  —   '}  ` +
+        `${String(m.bets).padStart(5)}  ${pct(m.accuracy).padStart(6)}  ${pct(m.roi).padStart(7)}`,
+    );
+  }
+
   console.log('\n  calibration (predicted -> observed, n)');
   for (const bucket of summary.calibration) {
     console.log(

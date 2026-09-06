@@ -26,7 +26,8 @@ import {
   getSystemSettings,
 } from '@/lib/config/settings-service';
 import { getFootballProvider, getOddsProvider, footballQuotaPolicy, oddsQuotaPolicy } from '@/lib/providers';
-import { getQuotaState } from '@/lib/providers/quota';
+import { getQuotaSnapshot } from '@/lib/providers/quota-manager';
+import type { CoverageWindow } from '@/lib/schedule/bulletin-schedule';
 
 /**
  * The scheduled jobs and what each is allowed to do (§38, §42).
@@ -430,13 +431,17 @@ export async function getPipelineStatus() {
     publicationCovering(today, schedule) ?? nextPublicationDate(today, schedule, { inclusive: true });
   const window = coverageWindow(activePublication, schedule);
 
-  const [footballQuota, oddsQuota, recentRuns, awaitingResult, pendingCoupons] = await Promise.all([
-    getQuotaState(footballQuotaPolicy()),
-    getQuotaState(oddsQuotaPolicy()),
-    prisma.jobRun.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
-    prisma.match.count({ where: { status: { in: ['SCHEDULED', 'LIVE', 'HALF_TIME', 'SUSPENDED'] } } }),
-    prisma.coupon.count({ where: { resultStatus: 'PENDING' } }),
-  ]);
+  const [footballQuota, oddsQuota, recentRuns, awaitingResult, pendingCoupons, coverage] =
+    await Promise.all([
+      getQuotaSnapshot(footballQuotaPolicy()),
+      getQuotaSnapshot(oddsQuotaPolicy()),
+      prisma.jobRun.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
+      prisma.match.count({
+        where: { status: { in: ['SCHEDULED', 'LIVE', 'HALF_TIME', 'SUSPENDED'] } },
+      }),
+      prisma.coupon.count({ where: { resultStatus: 'PENDING' } }),
+      getPredictionCoverage(window),
+    ]);
 
   return {
     schedule,
@@ -452,5 +457,65 @@ export async function getPipelineStatus() {
     recentRuns,
     awaitingResult,
     pendingCoupons,
+    coverage,
+  };
+}
+
+/**
+ * Why the window's fixtures did or did not produce predictions.
+ *
+ * "32 of 48 fixtures have predictions" was a number with no explanation
+ * attached, so the gap could only be investigated by hand. The engine now
+ * records a reason per fixture per run; this reads back the latest run's.
+ */
+export async function getPredictionCoverage(window: CoverageWindow) {
+  const totalFixtures = await prisma.match.count({
+    where: {
+      scheduledKickoffUtc: { gte: window.startUtc, lt: window.endUtc },
+      status: 'SCHEDULED',
+      league: { active: true },
+    },
+  });
+
+  const latest = await prisma.predictionCoverage.findFirst({
+    orderBy: { runAt: 'desc' },
+    select: { runAt: true },
+  });
+
+  if (!latest) {
+    return { totalFixtures, runAt: null, byReason: {}, oddsAvailable: 0, predictionsGenerated: 0, recommendationsGenerated: 0 };
+  }
+
+  const rows = await prisma.predictionCoverage.findMany({
+    where: { runAt: latest.runAt },
+    select: {
+      reason: true,
+      selectionsPriced: true,
+      predictionsMade: true,
+      recommendations: true,
+      oddsAgeMinutes: true,
+    },
+  });
+
+  const byReason: Record<string, number> = {};
+  let oddsAvailable = 0;
+  let predictionsGenerated = 0;
+  let recommendationsGenerated = 0;
+
+  for (const row of rows) {
+    byReason[row.reason] = (byReason[row.reason] ?? 0) + 1;
+    if (row.selectionsPriced > 0) oddsAvailable++;
+    predictionsGenerated += row.predictionsMade;
+    recommendationsGenerated += row.recommendations;
+  }
+
+  return {
+    totalFixtures,
+    runAt: latest.runAt,
+    fixturesReported: rows.length,
+    byReason,
+    oddsAvailable,
+    predictionsGenerated,
+    recommendationsGenerated,
   };
 }

@@ -95,7 +95,15 @@ export function teamTotalCode(side: 'HOME' | 'AWAY', direction: 'OVER' | 'UNDER'
 
 export const GOAL_LINES = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5] as const;
 export const TEAM_GOAL_LINES = [0.5, 1.5, 2.5] as const;
-export const GOALS_PLUS_THRESHOLDS = [6, 7] as const;
+/**
+ * Goal thresholds a Turkish bulletin actually prints.
+ *
+ * It stops at 6+. A 7+ selection was being modelled, priced and put on coupons
+ * for a bet no reader can place, so it is not offered — the seeded selection
+ * row stays for the odds already stored against it, but nothing new is
+ * produced for it.
+ */
+export const GOALS_PLUS_THRESHOLDS = [6] as const;
 export const ASIAN_HANDICAP_LINES = [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2] as const;
 
 /** A whole-line handicap refunds the stake when the margin lands exactly on it. */

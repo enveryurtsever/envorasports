@@ -469,12 +469,54 @@ function isDistinct(coupon: BuiltCoupon, existing: BuiltCoupon[]): boolean {
   });
 }
 
+/**
+ * Fixtures and markets already spent, shared across an entire generation run.
+ *
+ * Scoped to a single category, this only ever stopped a fixture appearing twice
+ * *within* Banko — it reset before Dengeli and again before each Sürpriz slate,
+ * so the same match reappeared in three categories and the reader saw one
+ * fixture presented as three separate tips. Passing one pair of sets through
+ * the whole run makes "different matches" mean different across the day's
+ * coupons, not merely within a category.
+ */
+export interface GenerationLedger {
+  usedMatches: Set<string>;
+  usedMarkets: Set<string>;
+}
+
+/**
+ * Largest share of a candidate coupon's fixtures that any existing coupon
+ * already has.
+ *
+ * Measured against each coupon separately rather than against the union: two
+ * coupons that each share half a slate are a different problem from one that
+ * duplicates another outright, and it is the outright duplicate a reader
+ * notices.
+ */
+function fixtureOverlap(candidate: BuiltCoupon, existing: BuiltCoupon[]): number {
+  if (existing.length === 0) return 0;
+
+  const fixtures = new Set(candidate.selections.map((s) => s.matchId));
+  if (fixtures.size === 0) return 0;
+
+  let worst = 0;
+  for (const coupon of existing) {
+    let shared = 0;
+    for (const selection of coupon.selections) {
+      if (fixtures.has(selection.matchId)) shared++;
+    }
+    worst = Math.max(worst, shared / fixtures.size);
+  }
+  return worst;
+}
+
 export function buildCategoryCoupons(
   candidates: Candidate[],
   settings: CouponCategorySettings,
   matrix: CorrelationMatrix,
   weights: CouponScoringWeights,
   groupKeys: LocalDateKey[],
+  ledger?: GenerationLedger,
 ): { coupons: BuiltCoupon[]; poolSize: number; shortfallReason: string | null } {
   const pool = filterForCategory(candidates, settings);
   if (pool.length === 0) {
@@ -482,8 +524,10 @@ export function buildCategoryCoupons(
   }
 
   const coupons: BuiltCoupon[] = [];
-  const usedMatches = new Set<string>();
-  const usedMarkets = new Set<string>();
+  // Falls back to a run-local ledger so a direct caller (and the tests) keep
+  // the previous per-category behaviour.
+  const usedMatches = ledger?.usedMatches ?? new Set<string>();
+  const usedMarkets = ledger?.usedMarkets ?? new Set<string>();
 
   /**
    * Spread the requested count across the match days that actually have
@@ -539,7 +583,38 @@ export function buildCategoryCoupons(
   // then keep the likeliest. Any day may fill what the per-day share left over.
   const target = settings.couponCount * OVERBUILD;
 
-  if (coupons.length < target) {
+  /**
+   * Reuse fixtures reluctantly, in steps, rather than all at once.
+   *
+   * The strict pass above refuses a fixture another coupon already used, and
+   * exhausts a thin pool quickly — a six-leg slate takes six fixtures out of
+   * circulation per coupon. What followed was a single fallback that dropped
+   * the rule entirely, so coupons two and three came back as near-copies of
+   * coupon one: eight legs, seven of them shared, presented as three tips.
+   *
+   * `isDistinct` did not catch it because it asks whether the *combination*
+   * differs, and swapping one leg of eight satisfies that while looking
+   * identical to a reader. So overlap is capped explicitly and the cap is
+   * loosened only when the tighter one cannot fill the slate — a third of the
+   * legs shared, then two thirds, then whatever is left. A pool that genuinely
+   * has nothing else still produces a coupon; it just never does so before the
+   * alternatives are exhausted.
+   */
+  const OVERLAP_TIERS = [1 / 3, 2 / 3, 1];
+
+  for (const maxOverlap of OVERLAP_TIERS) {
+    if (coupons.length >= target) break;
+    /**
+     * Fewer coupons beats the same coupon twice.
+     *
+     * The final tier accepts any overlap, which is the right answer only when
+     * the alternative is an empty slate — a pool of six İY/MS fixtures cannot
+     * make three genuinely different six-leg coupons, and forcing it produced
+     * three slips with identical legs. So unlimited reuse is reserved for the
+     * case the user actually asked about: nothing else could be found at all.
+     */
+    if (maxOverlap >= 1 && coupons.length > 0) break;
+
     for (const groupKey of activeKeys) {
       if (coupons.length >= target) break;
       const groupPool = pool.filter((c) => c.targetDate === groupKey);
@@ -560,6 +635,7 @@ export function buildCategoryCoupons(
           true,
         );
         if (!coupon || !isDistinct(coupon, coupons)) continue;
+        if (fixtureOverlap(coupon, coupons) > maxOverlap) continue;
 
         coupons.push(coupon);
         coupon.selections.forEach((s) => {
@@ -683,9 +759,25 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
    * what was actually predicted, and a re-run for any reason (a settings
    * change, a wider bulletin) was quietly erasing yesterday's results along
    * with the tips that produced them.
+   *
+   * Scoped to the publication *date*, not to this run. A generation run is
+   * keyed on (publicationDate, modelVersionId), so publishing a new model
+   * version created a new run whose delete matched nothing: the previous
+   * version's pending coupons stayed live on the site, and the new ones then
+   * collided with them on `reference`. A pending coupon built by a model that
+   * has since been withdrawn is exactly the thing that must not survive a
+   * regeneration.
    */
+  const runsForDate = await prisma.couponGenerationRun.findMany({
+    where: { publicationDate },
+    select: { id: true },
+  });
+
   await prisma.coupon.deleteMany({
-    where: { generationRunId: run.id, resultStatus: 'PENDING' },
+    where: {
+      generationRunId: { in: runsForDate.map((previous) => previous.id) },
+      resultStatus: 'PENDING',
+    },
   });
 
   const groupKeys =
@@ -693,6 +785,14 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
 
   const outcomes: CategoryOutcome[] = [];
   let couponsGenerated = 0;
+
+  /**
+   * One ledger for the whole publication, so a fixture spent by Banko is not
+   * spent again by Dengeli or by a Sürpriz slate. Each builder still relaxes
+   * the exclusion when a category cannot otherwise be filled, so a thin
+   * bulletin reuses a match rather than producing nothing.
+   */
+  const ledger: GenerationLedger = { usedMatches: new Set(), usedMarkets: new Set() };
 
   for (const [category, settings] of Object.entries(options.categorySettings) as Array<
     [CouponCategory, CouponCategorySettings]
@@ -716,6 +816,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       matrix,
       weights,
       groupKeys,
+      ledger,
     );
 
     for (const [index, coupon] of coupons.entries()) {
@@ -776,6 +877,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
         group.category,
         focusOffset,
         {
+          ledger,
           settings,
           couponCount: group.couponCount,
           systemType: group.system.systemType,
@@ -791,7 +893,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       continue;
     }
 
-    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys);
+    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys, ledger);
 
     for (const [index, coupon] of built.coupons.entries()) {
       await persistCoupon(
@@ -830,6 +932,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       groupKeys,
       sourceCategory as CouponCategory,
       couponsGenerated,
+      { ledger },
     );
     outcomes.push(systemOutcome.outcome);
     couponsGenerated += systemOutcome.produced;
@@ -943,6 +1046,8 @@ async function generateSystemCoupons(
     maxBaseSelections?: number;
     minCombinedProbability?: number;
     strategyLabel?: string;
+    /** Fixtures the rest of this publication has already spent. */
+    ledger?: GenerationLedger;
   } = {},
 ): Promise<{ outcome: CategoryOutcome; produced: number }> {
   const baseSystem = options.systemSettings;
@@ -1005,7 +1110,16 @@ async function generateSystemCoupons(
    * insists on fresh fixtures; a second round drops the insistence only if the
    * slate could not otherwise be filled.
    */
-  const slateMatches = new Set<string>();
+  /**
+   * Seeded from the run-wide ledger, not empty.
+   *
+   * Each slate kept its own list, so the İY/MS system and the plain system
+   * drawn from the same HIGH_VALUE pool produced the identical six fixtures —
+   * two coupons on one page, same matches, presented as two ideas. Starting
+   * from what the run has already spent makes the first round reach for
+   * something new; the later rounds still relax when the pool has nothing.
+   */
+  const slateMatches = new Set<string>(override?.ledger?.usedMatches ?? []);
   /**
    * Base sets already produced.
    *
@@ -1014,8 +1128,26 @@ async function generateSystemCoupons(
    * and the slate shows the same coupon twice at the same odds.
    */
   const slateSignatures = new Set<string>();
+  /** Fixture sets already published in this slate, for the overlap check. */
+  const slateFixtureSets: Array<Set<string>> = [];
 
-  for (const round of [0, 1]) {
+  /**
+   * How much of a new system may repeat an earlier one, round by round.
+   *
+   * Round 0 insists on entirely fresh fixtures. The relaxed round used to drop
+   * that outright, and `slateSignatures` did not catch the result because it
+   * compares *selections*: two systems over the identical eight fixtures with
+   * one leg picked differently are different signatures and the same coupon to
+   * a reader. Overlap is now capped on fixtures and loosened a step at a time,
+   * so a slate reuses a match only when there is genuinely nothing else left.
+   */
+  const ROUND_MAX_OVERLAP = [0, 1 / 3, 2 / 3, 1];
+
+  for (const round of ROUND_MAX_OVERLAP.keys()) {
+    // Same rule as the straight coupons: a slate that already has something
+    // stops rather than repeating it. See OVERLAP_TIERS above.
+    if ((ROUND_MAX_OVERLAP[round] ?? 1) >= 1 && produced > 0) break;
+
   for (const groupKey of groupKeys) {
     if (produced >= system.couponCount) break;
 
@@ -1057,7 +1189,18 @@ async function generateSystemCoupons(
       .sort()
       .join('|');
     if (slateSignatures.has(signature)) continue;
+
+    const fixtures = new Set(base.map((c) => c.matchId));
+    const maxOverlap = ROUND_MAX_OVERLAP[round] ?? 1;
+    const worstOverlap = slateFixtureSets.reduce((worst, previous) => {
+      let shared = 0;
+      for (const matchId of fixtures) if (previous.has(matchId)) shared++;
+      return Math.max(worst, shared / fixtures.size);
+    }, 0);
+    if (worstOverlap > maxOverlap) continue;
+
     slateSignatures.add(signature);
+    slateFixtureSets.push(fixtures);
 
     let plan;
     try {
@@ -1206,7 +1349,11 @@ async function generateSystemCoupons(
     }
 
     produced++;
-    base.forEach((c) => slateMatches.add(c.matchId));
+    base.forEach((c) => {
+      slateMatches.add(c.matchId);
+      override?.ledger?.usedMatches.add(c.matchId);
+      override?.ledger?.usedMarkets.add(c.marketCode);
+    });
     }
   }
   if (produced >= system.couponCount) break;

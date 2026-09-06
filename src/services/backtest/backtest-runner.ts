@@ -68,6 +68,30 @@ export interface CalibrationBucket {
   count: number;
 }
 
+/**
+ * One source of probabilities, scored on its own.
+ *
+ * The ensemble was the only thing ever measured, which makes every question
+ * about it unanswerable: whether Poisson's 0.50 is earned, whether Form adds
+ * anything Elo does not, whether the blend beats simply following the price.
+ * Each source is scored against the same graded outcomes, over the same
+ * matches, so the comparison is like-for-like.
+ */
+export interface ModelMetrics {
+  /** "ensemble", "poisson", "elo", "form", "xg", or "market". */
+  source: string;
+  /** Selections this source had an opinion on and that could be graded. */
+  sampleSize: number;
+  brierScore: number | null;
+  logLoss: number | null;
+  /** Share of graded selections that landed, among those it would have backed. */
+  accuracy: number | null;
+  /** Flat stakes on this source's own picks, under the same edge rule. */
+  bets: number;
+  roi: number | null;
+  calibration: CalibrationBucket[];
+}
+
 export interface BacktestSummary {
   backtestId: string;
   totalBets: number;
@@ -87,9 +111,103 @@ export interface BacktestSummary {
   calibration: CalibrationBucket[];
   matchesEvaluated: number;
   matchesSkipped: number;
+  /** Per-source scores: the ensemble, each component model, and the market. */
+  perModel: ModelMetrics[];
 }
 
 const CALIBRATION_BUCKETS = 10;
+
+/** Running totals for one probability source. */
+interface ModelAccumulator {
+  source: string;
+  sample: number;
+  brier: number;
+  logLoss: number;
+  wins: number;
+  bets: number;
+  stake: number;
+  payout: number;
+  buckets: CalibrationBucket[];
+}
+
+function newAccumulator(source: string): ModelAccumulator {
+  return {
+    source,
+    sample: 0,
+    brier: 0,
+    logLoss: 0,
+    wins: 0,
+    bets: 0,
+    stake: 0,
+    payout: 0,
+    buckets: Array.from({ length: CALIBRATION_BUCKETS }, (_, i) => ({
+      lower: i / CALIBRATION_BUCKETS,
+      upper: (i + 1) / CALIBRATION_BUCKETS,
+      predicted: 0,
+      observed: 0,
+      count: 0,
+    })),
+  };
+}
+
+/**
+ * Scores one source's probability against one graded outcome.
+ *
+ * Scoring happens on *every* selection the source had a view on, not only the
+ * ones it would have bet — a proper scoring rule measured on a self-selected
+ * subset says nothing. The betting arm is separate and uses the same edge and
+ * probability floor the live engine applies.
+ */
+function accumulate(
+  accumulator: ModelAccumulator,
+  probability: number,
+  won: boolean,
+  odds: number,
+  multiplier: number,
+  gate: { minEdge: number; minProbability: number; stake: number },
+): void {
+  const p = Math.min(1 - 1e-9, Math.max(1e-9, probability));
+
+  accumulator.sample++;
+  accumulator.brier += (p - (won ? 1 : 0)) ** 2;
+  accumulator.logLoss += won ? -Math.log(p) : -Math.log(1 - p);
+
+  const index = Math.min(CALIBRATION_BUCKETS - 1, Math.floor(p * CALIBRATION_BUCKETS));
+  const bucket = accumulator.buckets[index] as CalibrationBucket;
+  bucket.count++;
+  bucket.predicted += p;
+  if (won) bucket.observed++;
+
+  // Would this source have taken the bet on its own?
+  const edge = p - 1 / odds;
+  if (p >= gate.minProbability && edge >= gate.minEdge) {
+    accumulator.bets++;
+    accumulator.stake += gate.stake;
+    accumulator.payout += gate.stake * multiplier;
+    if (won) accumulator.wins++;
+  }
+}
+
+function finalise(accumulator: ModelAccumulator): ModelMetrics {
+  const { sample, bets, stake, payout } = accumulator;
+
+  return {
+    source: accumulator.source,
+    sampleSize: sample,
+    brierScore: sample === 0 ? null : accumulator.brier / sample,
+    logLoss: sample === 0 ? null : accumulator.logLoss / sample,
+    accuracy: bets === 0 ? null : accumulator.wins / bets,
+    bets,
+    roi: stake === 0 ? null : (payout - stake) / stake,
+    calibration: accumulator.buckets
+      .filter((bucket) => bucket.count > 0)
+      .map((bucket) => ({
+        ...bucket,
+        predicted: bucket.predicted / bucket.count,
+        observed: bucket.observed / bucket.count,
+      })),
+  };
+}
 
 /** Chronological folds — the only split shape a time series permits (§37). */
 export function buildWalkForwardPlan(
@@ -183,6 +301,15 @@ export async function runBacktest(options: BacktestOptions): Promise<BacktestSum
 
   const leagueAverageCache = new Map<string, { homeGoals: number; awayGoals: number; sampleSize: number }>();
   const rows: Prisma.BacktestPredictionCreateManyInput[] = [];
+  /** One accumulator per probability source, created on first sight. */
+  const accumulators = new Map<string, ModelAccumulator>();
+  const accumulatorFor = (source: string): ModelAccumulator => {
+    const existing = accumulators.get(source);
+    if (existing) return existing;
+    const created = newAccumulator(source);
+    accumulators.set(source, created);
+    return created;
+  };
 
   let matchesEvaluated = 0;
   let matchesSkipped = 0;
@@ -273,14 +400,8 @@ export async function runBacktest(options: BacktestOptions): Promise<BacktestSum
     );
 
     for (const [selectionCode, price] of bestBySelection) {
-      const probability = calibrated.probabilities.get(selectionCode);
-      if (!probability || Number(probability) < minProbability) continue;
-
       const odds = dec(price.price);
       if (odds.lessThanOrEqualTo(1)) continue;
-
-      const edgeValue = computeEdge(probability, odds);
-      if (Number(edgeValue) < minEdge) continue;
 
       const outcome = settleSelection(
         {
@@ -297,7 +418,47 @@ export async function runBacktest(options: BacktestOptions): Promise<BacktestSum
       if (outcome === 'PENDING') continue;
 
       const stake = dec(stakePerBet);
-      const payout = toMoney(stake.times(settlementMultiplier(outcome, odds)));
+      const multiplier = settlementMultiplier(outcome, odds);
+      const payout = toMoney(stake.times(multiplier));
+
+      /**
+       * Score every source on this graded outcome.
+       *
+       * Deliberately above the edge and probability gates: a Brier score is
+       * only meaningful over everything the source had a view on. The gates
+       * still decide what each source would have *bet*, which is what the ROI
+       * arm of the accumulator measures.
+       */
+      const won = outcome === 'WON' || outcome === 'HALF_WON';
+      const gate = { minEdge, minProbability, stake: stakePerBet };
+      const scoreSource = (source: string, value: Decimal | undefined) => {
+        if (!value) return;
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric <= 0 || numeric >= 1) return;
+        accumulate(
+          accumulatorFor(source),
+          numeric,
+          won,
+          Number(odds),
+          Number(multiplier),
+          gate,
+        );
+      };
+
+      scoreSource('ensemble', calibrated.probabilities.get(selectionCode));
+      // The vig-free price is the benchmark every model has to beat; without it
+      // a "good" Brier score has nothing to be good relative to.
+      scoreSource('market', calibrated.marketProbabilities.get(selectionCode));
+      for (const model of prediction.models) {
+        if (!model.available) continue;
+        scoreSource(model.name, model.probabilities.get(selectionCode));
+      }
+
+      const probability = calibrated.probabilities.get(selectionCode);
+      if (!probability || Number(probability) < minProbability) continue;
+
+      const edgeValue = computeEdge(probability, odds);
+      if (Number(edgeValue) < minEdge) continue;
 
       rows.push({
         backtestId: backtest.id,
@@ -323,7 +484,16 @@ export async function runBacktest(options: BacktestOptions): Promise<BacktestSum
     await prisma.backtestPrediction.createMany({ data: rows.slice(i, i + 2000) });
   }
 
-  const summary = summarise(rows, matchesEvaluated, matchesSkipped, backtest.id);
+  /**
+   * Ordered so the comparison reads as an argument: the blend, the price it
+   * has to beat, then each component that feeds it.
+   */
+  const ORDER = ['ensemble', 'market', 'poisson', 'elo', 'form', 'xg'];
+  const perModel = [...accumulators.values()]
+    .map(finalise)
+    .sort((a, b) => ORDER.indexOf(a.source) - ORDER.indexOf(b.source));
+
+  const summary = summarise(rows, matchesEvaluated, matchesSkipped, backtest.id, perModel);
 
   await prisma.backtest.update({
     where: { id: backtest.id },
@@ -351,6 +521,7 @@ export async function runBacktest(options: BacktestOptions): Promise<BacktestSum
         summary.brierScore === null ? null : new Prisma.Decimal(summary.brierScore.toFixed(8)),
       logLoss: summary.logLoss === null ? null : new Prisma.Decimal(summary.logLoss.toFixed(8)),
       calibration: summary.calibration as unknown as Prisma.InputJsonValue,
+      perModelMetrics: summary.perModel as unknown as Prisma.InputJsonValue,
     },
   });
 
@@ -369,6 +540,7 @@ function summarise(
   matchesEvaluated: number,
   matchesSkipped: number,
   backtestId: string,
+  perModel: ModelMetrics[],
 ): BacktestSummary {
   const empty: BacktestSummary = {
     backtestId,
@@ -387,6 +559,7 @@ function summarise(
     brierScore: null,
     logLoss: null,
     calibration: [],
+    perModel,
     matchesEvaluated,
     matchesSkipped,
   };
@@ -471,6 +644,7 @@ function summarise(
     maxDrawdown: Number(toMoney(maxDrawdown)),
     brierScore: Number(brierSum.dividedBy(rows.length)),
     logLoss: Number(logLossSum.dividedBy(rows.length)),
+    perModel,
     calibration: buckets
       .filter((bucket) => bucket.count > 0)
       .map((bucket) => ({

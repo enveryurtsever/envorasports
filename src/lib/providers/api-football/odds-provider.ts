@@ -87,8 +87,14 @@ const OUTCOME_CODE: Record<string, '1' | 'X' | '2'> = {
  */
 const OVER_UNDER_LINES = GOAL_LINES.filter((line) => line < 5);
 
-/** "Over 5.5" is exactly "6 or more goals" — an identity, not an approximation. */
-const GOALS_PLUS_FROM_LINE: Record<string, number> = { '5.5': 6, '6.5': 7 };
+/**
+ * "Over 5.5" is exactly "6 or more goals" — an identity, not an approximation.
+ *
+ * "Over 6.5" would be 7+, which a Turkish bulletin does not carry, so it is
+ * dropped rather than folded into 6+: the two are different events, and giving
+ * them one code would store two prices for the same selection.
+ */
+const GOALS_PLUS_FROM_LINE: Record<string, number> = { '5.5': 6 };
 
 type Mapped = {
   marketCode: string;

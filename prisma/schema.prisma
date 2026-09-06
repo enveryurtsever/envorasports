@@ -1190,6 +1190,11 @@ model Backtest {
   logLoss            Decimal? @map("log_loss") @db.Decimal(10, 8)
   /// Reliability-curve buckets for calibration plots.
   calibration        Json?
+  /// Each model scored on its own against the same graded outcomes — Poisson,
+  /// Elo, Form and the vig-free market price, alongside the ensemble. Without
+  /// it, a blend can only be compared to itself and there is no way to tell
+  /// whether a component is carrying it or dragging it.
+  perModelMetrics    Json?     @map("per_model_metrics")
 
   startedAt  DateTime? @map("started_at")
   finishedAt DateTime? @map("finished_at")

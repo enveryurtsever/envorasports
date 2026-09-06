@@ -39,7 +39,9 @@ describe('mapBetValue', () => {
       marketCode: 'TOTAL_GOALS_THRESHOLD',
       selectionCode: 'GOALS_6_PLUS',
     });
-    expect(mapBetValue(5, 'Over 6.5')).toMatchObject({ selectionCode: 'GOALS_7_PLUS' });
+    // 7+ is not on a Turkish bulletin, so "Over 6.5" is dropped rather than
+    // folded into 6+ — they are different events and one code cannot hold both.
+    expect(mapBetValue(5, 'Over 6.5')).toBeNull();
     // The under side has no threshold equivalent and must not be invented.
     expect(mapBetValue(5, 'Under 5.5')).toBeNull();
   });
