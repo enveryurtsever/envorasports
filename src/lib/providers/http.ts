@@ -53,10 +53,51 @@ export interface RequestOptions {
    * its window has reset. At most one such call per probe interval.
    */
   allowProbe?: boolean;
+  /**
+   * What the call was for, recorded alongside its cost.
+   *
+   * Cost counted on its own says nothing: two credits for a whole competition
+   * and two for a single fixture are the same number and a twenty-fold
+   * difference in value. This is what lets the two be told apart afterwards.
+   */
+  sportKey?: string;
   signal?: AbortSignal;
 }
 
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+/**
+ * What a response actually brought back, for judging cost against yield.
+ *
+ * Shape-sniffed rather than typed per provider: this only ever produces
+ * counters for a log, and a body it does not recognise simply reports nothing.
+ */
+function describeYield(body: unknown): {
+  eventsReturned?: number;
+  bookmakerCount?: number;
+  marketCount?: number;
+} {
+  const events = Array.isArray(body) ? body : null;
+  if (!events) return {};
+
+  let bookmakerCount = 0;
+  const markets = new Set<string>();
+  for (const event of events) {
+    const books = (event as { bookmakers?: unknown }).bookmakers;
+    if (!Array.isArray(books)) continue;
+    bookmakerCount += books.length;
+    for (const book of books) {
+      const list = (book as { markets?: unknown }).markets;
+      if (!Array.isArray(list)) continue;
+      for (const market of list) {
+        const key = (market as { key?: unknown }).key;
+        if (typeof key === 'string') markets.add(key);
+      }
+    }
+  }
+
+  return { eventsReturned: events.length, bookmakerCount, marketCount: markets.size };
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -261,6 +302,8 @@ export class HttpClient {
           attempt,
           cost: request.cost ?? 1,
           quotaRemaining,
+          sportKey: request.sportKey,
+          ...describeYield(body),
         });
 
         if (this.options.quota) {
@@ -334,6 +377,10 @@ export class HttpClient {
     cost: number;
     quotaRemaining?: number | null;
     errorMessage?: string;
+    sportKey?: string;
+    eventsReturned?: number;
+    bookmakerCount?: number;
+    marketCount?: number;
   }): Promise<void> {
     try {
       await prisma.providerRequestLog.create({
@@ -347,6 +394,10 @@ export class HttpClient {
           cost: entry.cost,
           quotaRemaining: entry.quotaRemaining ?? null,
           errorMessage: entry.errorMessage ?? null,
+          sportKey: entry.sportKey ?? null,
+          eventsReturned: entry.eventsReturned ?? null,
+          bookmakerCount: entry.bookmakerCount ?? null,
+          marketCount: entry.marketCount ?? null,
         },
       });
     } catch (error) {

@@ -97,9 +97,22 @@ export interface ResultSyncResult {
 export async function syncMatchResults(now: Date = new Date()): Promise<ResultSyncResult> {
   const intervals = await loadIntervals();
 
+  const provider = getFootballProvider();
+
   const candidates = await prisma.match.findMany({
     where: {
       status: { in: [...OPEN_STATUSES] },
+      /**
+       * Only fixtures this provider can answer about.
+       *
+       * Discovery creates fixtures from the odds provider, whose event ids mean
+       * nothing here. Polling them would spend the daily budget asking about
+       * fixtures that cannot exist, and every answer would be "not found" —
+       * which then counts as a failed attempt against a real match's allowance.
+       * They are settled once the football provider serves them and the fixture
+       * is reconciled; until then they are simply not this job's business.
+       */
+      source: provider.name,
       // Anything older than a week without a final result is a data problem,
       // not a match in progress; it is surfaced in the admin monitor instead.
       scheduledKickoffUtc: {
@@ -141,7 +154,6 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
   if (due.length === 0) return result;
 
   const byExternalId = new Map(due.map((m) => [m.externalId, m]));
-  const provider = getFootballProvider();
 
   for (let i = 0; i < due.length; i += BATCH_SIZE) {
     const batch = due.slice(i, i + BATCH_SIZE);

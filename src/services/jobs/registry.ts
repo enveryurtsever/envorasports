@@ -12,6 +12,8 @@ import {
   todayInSchedule,
 } from '@/lib/schedule/bulletin-schedule';
 import { syncMatchOddsForWindow } from '@/services/ingestion/match-odds-sync';
+import { discoverFixtures } from '@/services/ingestion/fixture-discovery';
+import { syncBulkOdds } from '@/services/ingestion/bulk-odds-sync';
 import { syncFixturesForWindow } from '../ingestion/fixture-sync';
 import { syncBulletinForWindow } from '../ingestion/bulletin-sync';
 import { syncMatchResults } from '../ingestion/result-sync';
@@ -43,6 +45,8 @@ import type { CoverageWindow } from '@/lib/schedule/bulletin-schedule';
  */
 
 export type JobName =
+  | 'discovery'
+  | 'bulk-odds'
   | 'bulletin-publication'
   | 'fixture-topup'
   | 'match-odds'
@@ -202,6 +206,69 @@ export async function runFixtureTopup(): Promise<JobOutcome> {
         itemsProcessed: fixtures.matchesUpserted,
         itemsFailed: fixtures.daysDeferred.length,
         metadata: { publication: activePublication, window: window.days, fixtures },
+      };
+    },
+  });
+}
+
+/**
+ * Football discovery. Costs nothing, so it can run often.
+ *
+ * The Odds API does not meter `/sports` or `/events`. That is the whole reason
+ * this job exists separately: finding out which matches exist stopped being
+ * something the 100-a-day fixture budget had to pay for.
+ */
+export async function runDiscovery(): Promise<JobOutcome> {
+  return runJob({
+    jobName: 'discovery',
+    lockKey: 'discovery',
+    lockTtlMs: 15 * 60 * 1000,
+    handler: async ({ logger }) => {
+      const discovery = await discoverFixtures();
+      logger.info('discovery complete', {
+        events: discovery.eventsDiscovered,
+        inWindow: discovery.eventsInWindow,
+        mapped: discovery.newlyMapped + discovery.alreadyMapped,
+      });
+      return {
+        itemsProcessed: discovery.fixturesUpserted,
+        itemsFailed: discovery.unmappable,
+        metadata: { discovery },
+      };
+    },
+  });
+}
+
+/**
+ * Prices whole competitions at once, from the metered provider.
+ *
+ * Separate from discovery because it spends credits and discovery does not,
+ * and separate from the publication so prices can be refreshed without
+ * rebuilding coupons.
+ */
+export async function runBulkOdds(): Promise<JobOutcome> {
+  const schedule = await getBulletinSchedule();
+  const today = todayInSchedule(schedule);
+  const activePublication =
+    publicationCovering(today, schedule) ?? nextPublicationDate(today, schedule, { inclusive: true });
+  const window = coverageWindow(activePublication, schedule);
+
+  return runJob({
+    jobName: 'bulk-odds',
+    lockKey: 'ingestion',
+    lockTtlMs: 20 * 60 * 1000,
+    handler: async ({ logger }) => {
+      const odds = await syncBulkOdds(window);
+      logger.info('bulk odds complete', {
+        competitions: odds.competitionsFetched,
+        credits: odds.creditsSpent,
+        prices: odds.pricesStored,
+        reason: odds.budgetReason,
+      });
+      return {
+        itemsProcessed: odds.pricesStored,
+        itemsFailed: odds.eventsPriced - odds.fixturesMatched,
+        metadata: { odds },
       };
     },
   });
@@ -509,10 +576,16 @@ export async function runNamedJob(name: JobName, request: JobRequest = {}): Prom
       return runHistoricalImport(request);
     case 'hayal':
       return runHayal();
+    case 'discovery':
+      return runDiscovery();
+    case 'bulk-odds':
+      return runBulkOdds();
   }
 }
 
 export const JOB_NAMES: JobName[] = [
+  'discovery',
+  'bulk-odds',
   'bulletin-publication',
   'fixture-topup',
   'match-odds',

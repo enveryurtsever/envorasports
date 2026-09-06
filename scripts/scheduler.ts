@@ -6,7 +6,9 @@ import {
   todayInSchedule,
 } from '../src/lib/schedule/bulletin-schedule';
 import {
+  runBulkOdds,
   runBulletinPublication,
+  runDiscovery,
   runFeatureRebuild,
   runFixtureTopup,
   runMatchOddsSync,
@@ -102,6 +104,23 @@ async function uncoveredFixturesExist(): Promise<boolean> {
 
 const JOBS: ScheduledJob[] = [
   {
+    /**
+     * Costs nothing. The Odds API meters odds, not enumeration, so finding out
+     * what football exists is free and can run on a short interval — which is
+     * what stopped the 100-a-day fixture budget paying for discovery.
+     */
+    name: 'discovery',
+    everyMs: 60 * MINUTE,
+    run: () => runDiscovery(),
+  },
+  {
+    // Prices whole competitions at once: measured at 2 credits for 22 priced
+    // events, against 22 requests of a hard 100/day on the other provider.
+    name: 'bulk-odds',
+    everyMs: 4 * 60 * MINUTE,
+    run: () => runBulkOdds(),
+  },
+  {
     name: 'bulletin-publication',
     everyMs: 10 * MINUTE,
     when: publicationIsDue,
@@ -123,10 +142,15 @@ const JOBS: ScheduledJob[] = [
     run: () => runFixtureTopup(),
   },
   {
-    // One request per fixture against a 100/day allowance, so four times a day
-    // keeps prices current without crowding out fixtures and result sync.
+    /**
+     * Fallback only, now that bulk odds carry the slate.
+     *
+     * It spends the fixture provider's hard budget one fixture at a time — 219
+     * of 100 requests in a day, at its worst — so it runs rarely and exists for
+     * the case where the odds provider's monthly credits run out entirely.
+     */
     name: 'match-odds',
-    everyMs: 6 * 60 * MINUTE,
+    everyMs: 12 * 60 * MINUTE,
     run: () => runMatchOddsSync(),
   },
   {

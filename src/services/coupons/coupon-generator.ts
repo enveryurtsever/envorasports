@@ -13,6 +13,7 @@ import {
 } from '@/lib/config/coupon-settings';
 import { getAppSetting } from '@/lib/config/settings-service';
 import { dateKeyToUtcMidnight, localDateKey, type LocalDateKey } from '@/lib/time/zoned';
+import { buildSelectionPool } from '@/services/predictions/selection-pool';
 import type { CoverageWindow } from '@/lib/schedule/bulletin-schedule';
 import {
   couponCorrelation,
@@ -86,6 +87,15 @@ export interface GenerationResult {
   candidatesEvaluated: number;
   matchesConsidered: number;
   outcomes: CategoryOutcome[];
+  /** What the master pool offered, and why anything was left out of it. */
+  pool: {
+    considered: number;
+    eligible: number;
+    rejected: number;
+    fixtures: number;
+    leagues: number;
+    reasons: Record<string, number>;
+  };
 }
 
 /** Ranking functions that make the coupons in a category actually differ (§32). */
@@ -783,6 +793,20 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
   const groupKeys =
     options.grouping === 'PER_DAY' ? options.window.days : [options.window.startDate];
 
+  /**
+   * Build the master selection pool before anything is combined.
+   *
+   * The builders below take what this leaves them. Eligibility is decided once,
+   * here, and recorded with reasons — so a thin slate is explained by the pool
+   * rather than discovered as an empty category at the end.
+   */
+  const pool = await buildSelectionPool({
+    window: options.window,
+    modelVersionId: options.modelVersionId,
+    generationRunId: run.id,
+    asOf,
+  });
+
   const outcomes: CategoryOutcome[] = [];
   let couponsGenerated = 0;
 
@@ -955,6 +979,8 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     publicationDate: options.window.publicationDate,
     couponsGenerated,
     candidates: candidates.length,
+    poolEligible: pool.eligible,
+    poolFixtures: pool.fixtures,
   });
 
   return {
@@ -963,6 +989,14 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     candidatesEvaluated: candidates.length,
     matchesConsidered: new Set(candidates.map((c) => c.matchId)).size,
     outcomes,
+    pool: {
+      considered: pool.predictionsConsidered,
+      eligible: pool.eligible,
+      rejected: pool.rejected,
+      fixtures: pool.fixtures,
+      leagues: pool.leagues,
+      reasons: pool.reasons,
+    },
   };
 }
 

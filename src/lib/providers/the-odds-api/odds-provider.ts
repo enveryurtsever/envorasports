@@ -65,7 +65,20 @@ interface RawSport {
  * credits and returns nothing, so the default list stays honest (§40: never
  * fake a market the provider does not support).
  */
-export const DEFAULT_MARKETS = ['h2h', 'totals', 'spreads'] as const;
+/**
+ * Markets the competition-wide endpoint will actually serve.
+ *
+ * Measured, not assumed: `btts` and `double_chance` are valid market names but
+ * answer 422 "Markets not supported by this endpoint" in bulk — and, usefully,
+ * cost nothing to be refused. Anything beyond this list has to be bought per
+ * event, at roughly twenty times the price per fixture.
+ *
+ * Bulk is the whole economic case for this provider. One call returned 22
+ * events, all 22 priced, across 256 bookmaker blocks, for 2 credits. The same
+ * fixtures per-event cost 44.
+ */
+export const DEFAULT_MARKETS = ['h2h', 'totals'] as const;
+export const BULK_SUPPORTED_MARKETS = ['h2h', 'totals', 'spreads'] as const;
 export const DEFAULT_REGIONS = ['eu'] as const;
 
 /**
@@ -422,6 +435,7 @@ export function createTheOddsApiProvider(config: {
               dateFormat: 'iso',
             },
             cost: creditCost(markets, regions),
+            sportKey: key,
           });
           events.push(...raw.map((event) => mapEvent(event, capturedAt)));
         } catch (error) {

@@ -389,6 +389,9 @@ model Match {
   couponSelections CouponSelection[]
   coverageReports  PredictionCoverage[]
   hayalSignals     HayalSignal[]
+  discoveredFrom   DiscoveredFixture[]
+  externalMapping  ExternalMatchMapping?
+  poolEntries      SelectionPool[]
 
   @@unique([source, externalId])
   @@index([scheduledKickoffUtc, status])
@@ -800,6 +803,7 @@ model Prediction {
   modelVersion ModelVersion     @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
 
   couponSelections CouponSelection[]
+  poolEntries      SelectionPool[]
 
   @@unique([matchId, selectionId, modelVersionId, predictionTimestamp])
   @@index([supersededAt])
@@ -1437,19 +1441,28 @@ model JobLock {
 }
 
 model ProviderRequestLog {
-  id             String   @id @default(cuid())
+  id             String  @id @default(cuid())
   provider       String
   endpoint       String
-  statusCode     Int?     @map("status_code")
-  durationMs     Int?     @map("duration_ms")
-  success        Boolean  @default(true)
-  attempt        Int      @default(1)
-  errorMessage   String?  @map("error_message")
+  statusCode     Int?    @map("status_code")
+  durationMs     Int?    @map("duration_ms")
+  success        Boolean @default(true)
+  attempt        Int     @default(1)
+  errorMessage   String? @map("error_message")
   /// Credits consumed. The Odds API charges markets x regions per call, so a
   /// plain request count would understate usage by 3-5x.
-  cost           Int      @default(1)
+  cost           Int     @default(1)
   /// Credits the provider reported as remaining, when it exposes a header.
-  quotaRemaining Int?     @map("quota_remaining")
+  quotaRemaining Int?    @map("quota_remaining")
+
+  /// What the call was for and what it brought back, so cost can be judged
+  /// against yield rather than counted on its own. A bulk odds call that
+  /// returns 22 priced events for 2 credits is a different thing from a
+  /// per-event call that returns one for the same price.
+  sportKey       String?  @map("sport_key")
+  eventsReturned Int?     @map("events_returned")
+  bookmakerCount Int?     @map("bookmaker_count")
+  marketCount    Int?     @map("market_count")
   createdAt      DateTime @default(now()) @map("created_at")
 
   @@index([provider, createdAt])
@@ -1686,4 +1699,145 @@ model HayalCoupon {
 
   @@index([variant])
   @@map("hayal_coupons")
+}
+
+// ===========================================================================
+// CROSS-PROVIDER DISCOVERY AND MAPPING
+//
+// The two providers share no ids and cover different competitions. The Odds
+// API's event list is not metered, so it can enumerate far more football than
+// the fixture provider's hard 100-a-day budget ever could — 603 upcoming
+// events across 50 competitions, for nothing. What it cannot do is supply the
+// history the models need. So one discovers, the other enriches, and this is
+// where the two are tied together.
+// ===========================================================================
+
+/// A football event as one provider sees it, before it is anything to us.
+///
+/// Kept separate from `Match` on purpose: an event may be in a competition we
+/// do not model, may never be mapped, and may never produce a prediction.
+/// Recording it anyway is what makes the size of the discoverable pool a
+/// measurable fact rather than a guess.
+model DiscoveredFixture {
+  id              String @id @default(cuid())
+  source          String
+  externalEventId String @map("external_event_id")
+
+  sportKey   String  @map("sport_key")
+  sportTitle String? @map("sport_title")
+
+  commenceTimeUtc DateTime @map("commence_time_utc")
+  homeTeamName    String   @map("home_team_name")
+  awayTeamName    String   @map("away_team_name")
+
+  /// What the last odds pull found for this event. Null means never asked.
+  bookmakerCount    Int?      @map("bookmaker_count")
+  marketCount       Int?      @map("market_count")
+  oddsLastCheckedAt DateTime? @map("odds_last_checked_at")
+
+  /// Set once the event is tied to a fixture we model. Null is normal: most
+  /// discovered events are in competitions we carry no history for.
+  matchId String? @map("match_id")
+
+  firstSeenAt DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime @map("last_seen_at")
+
+  match Match? @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
+  @@unique([source, externalEventId])
+  @@index([commenceTimeUtc])
+  @@index([sportKey, commenceTimeUtc])
+  @@index([matchId])
+  @@map("discovered_fixtures")
+}
+
+/// How a fixture is addressed by each provider, and how sure we are.
+///
+/// `Match` already carries both ids for the fast path. This records *why* they
+/// were joined — the method and the score — so a bad join can be found and
+/// undone instead of quietly feeding one team's history into another team's
+/// prediction.
+model ExternalMatchMapping {
+  id      String @id @default(cuid())
+  matchId String @unique @map("match_id")
+
+  theOddsEventId       String? @unique @map("the_odds_event_id")
+  apiFootballFixtureId String? @map("api_football_fixture_id")
+
+  /// 0..1. Only high-confidence mappings are used for enrichment.
+  confidence     Decimal @db.Decimal(5, 4)
+  /// e.g. "teams+kickoff", "exact-name+kickoff", "manual".
+  matchingMethod String  @map("matching_method")
+
+  /// The names as each side spelled them, for auditing a doubtful join.
+  detail Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@index([confidence])
+  @@map("external_match_mappings")
+}
+
+/// The pool a coupon is built from.
+///
+/// Coupons used to be assembled straight from predictions, which meant the
+/// eligibility rules lived inside the builder and every category re-derived
+/// them. One pool, built once, decides what is fit to back; the builders then
+/// only decide how to combine it. It is also what makes "how many qualified
+/// selections did we have today" answerable.
+model SelectionPool {
+  id              String @id @default(cuid())
+  generationRunId String @map("generation_run_id")
+
+  matchId      String @map("match_id")
+  predictionId String @map("prediction_id")
+
+  marketCode    String @map("market_code")
+  selectionCode String @map("selection_code")
+
+  /// Price and where it came from. Both matter: a price is only actionable
+  /// while it is current, and only comparable if its source is known.
+  odds           Decimal  @db.Decimal(12, 3)
+  oddsSource     String   @map("odds_source")
+  oddsCapturedAt DateTime @map("odds_captured_at")
+  oddsAgeMinutes Int      @map("odds_age_minutes")
+  /// FRESH / AGING / STALE at the moment the pool was built.
+  oddsFreshness  String   @map("odds_freshness")
+  bookmakerCount Int      @default(1) @map("bookmaker_count")
+
+  /// The model's view and the market's view, kept apart.
+  modelProbability  Decimal  @map("model_probability") @db.Decimal(9, 8)
+  marketProbability Decimal? @map("market_probability") @db.Decimal(9, 8)
+  fairOdds          Decimal? @map("fair_odds") @db.Decimal(12, 3)
+  /// modelProbability - marketProbability, in probability points. Not "edge %".
+  probabilityEdge   Decimal? @map("probability_edge") @db.Decimal(10, 6)
+  expectedValue     Decimal  @map("expected_value") @db.Decimal(10, 6)
+
+  confidence       Decimal @db.Decimal(5, 4)
+  riskScore        Decimal @map("risk_score") @db.Decimal(5, 4)
+  dataQualityScore Decimal @map("data_quality_score") @db.Decimal(5, 4)
+  /// How much this selection widens a slate: league and market rarity.
+  diversityScore   Decimal @map("diversity_score") @db.Decimal(5, 4)
+
+  eligible    Boolean  @default(false)
+  /// Why it is not eligible, or what was penalised. Never a bare boolean.
+  reasonCodes String[] @map("reason_codes")
+
+  leagueId       String  @map("league_id")
+  modelVersionId String  @map("model_version_id")
+  category       String?
+
+  builtAt   DateTime @map("built_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  match      Match      @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  prediction Prediction @relation(fields: [predictionId], references: [id], onDelete: Cascade)
+
+  @@unique([generationRunId, matchId, selectionCode])
+  @@index([generationRunId, eligible])
+  @@index([builtAt])
+  @@map("selection_pool")
 }
