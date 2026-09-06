@@ -96,6 +96,24 @@ const STRATEGIES = [
   { name: 'highest_edge', rank: (c: Candidate) => Number(c.edge) },
   { name: 'best_data_quality', rank: (c: Candidate) => c.dataQuality * Number(c.probability) },
   { name: 'highest_probability', rank: (c: Candidate) => Number(c.probability) },
+  {
+    /**
+     * Odds bought per unit of certainty spent.
+     *
+     * A category asked to hold 70% *and* clear 2.00 cannot be filled by ranking
+     * on edge or probability alone: the safe legs are too short to reach the
+     * odds, and the long ones break the floor. log(odds) / -log(probability) is
+     * exactly the exchange rate between the two — a fairly priced leg scores 1,
+     * and anything above it buys more odds than it costs in certainty.
+     */
+    name: 'value_density',
+    rank: (c: Candidate) => {
+      const probability = Number(c.probability);
+      const odds = Number(c.odds);
+      if (probability <= 0 || probability >= 1 || odds <= 1) return 0;
+      return Math.log(odds) / -Math.log(probability);
+    },
+  },
 ] as const;
 
 export async function loadCandidates(
@@ -288,6 +306,7 @@ export function buildCoupon(
 
   const chosen: Candidate[] = [];
   const chosenMatches = new Set<string>();
+  let runningProbability = dec(1);
 
   /**
    * Legs already taken from each market.
@@ -325,6 +344,25 @@ export function buildCoupon(
       continue;
     }
 
+    /**
+     * Check the probability floor before taking the leg, not after.
+     *
+     * The builder used to add whatever ranked highest and discover at the end
+     * that the coupon had fallen through its floor, which threw away the whole
+     * attempt. A category asked to hold 70% and clear 2.00 can be built — the
+     * legs just have to be chosen with the floor in mind. Below the minimum leg
+     * count there is nothing to protect yet, so the guard waits.
+     */
+    const nextProbability = runningProbability.times(candidate.probability);
+    if (
+      chosen.length + 1 > settings.minSelections &&
+      settings.minCombinedProbability > 0 &&
+      nextProbability.lessThan(settings.minCombinedProbability)
+    ) {
+      continue;
+    }
+
+    runningProbability = nextProbability;
     chosen.push(candidate);
     chosenMatches.add(candidate.matchId);
     marketCounts.set(candidate.marketCode, (marketCounts.get(candidate.marketCode) ?? 0) + 1);

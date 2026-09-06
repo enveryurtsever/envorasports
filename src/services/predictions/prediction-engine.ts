@@ -145,9 +145,21 @@ export function dataQualityScore(input: {
   return Math.max(0, Math.min(1, score));
 }
 
-function buildAttackDefence(form: TeamFormBundle, league: { homeGoals: number; awayGoals: number }) {
-  const home = form.home.sampleSize >= 3 ? form.home : form.windows.LAST_10;
-  const away = form.away.sampleSize >= 3 ? form.away : form.windows.LAST_10;
+/**
+ * Attack and defence strengths as ratios against the league baseline.
+ *
+ * The home side is measured at home and the away side away, each from its own
+ * form bundle. Both sides must come from their own team: reading them off one
+ * bundle leaves the opponent out of the Poisson model entirely.
+ */
+function buildAttackDefence(
+  homeForm: TeamFormBundle,
+  awayForm: TeamFormBundle,
+  league: { homeGoals: number; awayGoals: number },
+) {
+  // Fall back to overall form when a side has barely played at this venue.
+  const home = homeForm.home.sampleSize >= 3 ? homeForm.home : homeForm.windows.LAST_10;
+  const away = awayForm.away.sampleSize >= 3 ? awayForm.away : awayForm.windows.LAST_10;
 
   return {
     homeAttack: league.homeGoals > 0 ? home.averageGoalsFor / league.homeGoals : 1,
@@ -230,7 +242,7 @@ export async function computeMatchPrediction(
 
   const homeElo = elo.get(match.homeTeamId)!;
   const awayElo = elo.get(match.awayTeamId)!;
-  const strengths = buildAttackDefence(homeForm, leagueAverages);
+  const strengths = buildAttackDefence(homeForm, awayForm, leagueAverages);
 
   const models: ModelOutput[] = [
     runEloModel({

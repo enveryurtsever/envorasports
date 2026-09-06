@@ -271,14 +271,17 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     enabled: true,
     couponCount: 3,
     /**
-     * A Banko is certainty, and certainty is cheap: 75% prices at about 1.33,
-     * so the odds floor follows the probability rather than fighting it. The
-     * two cannot both be raised — 2.00 is a 50% shot by definition.
+     * 2.00 and a high chance pull against each other, and the pool decides
+     * where they meet. Adding legs does not help: holding a floor means every
+     * extra leg has to be shorter, and the shortening outruns the multiplying.
+     * With the handicap markets no longer offered, 2.00 is first reachable at a
+     * 55% floor — 65% caps out at 1.80. Raise the floor and the odds ceiling
+     * comes down with it; there is no setting where both go up.
      */
-    minTotalOdds: 1.3,
+    minTotalOdds: 2,
     maxTotalOdds: 4,
     minSelections: 2,
-    maxSelections: 3,
+    maxSelections: 6,
     minConfidence: 0.6,
     // A Banko is heavy favourites at short prices. Demanding edge on top of
     // that is what emptied the category: the market prices a 92% shot keenly,
@@ -296,7 +299,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
      * once the bulletin carries short-priced favourites (Over 0.5, double
      * chance on a heavy favourite); until then it would empty the category.
      */
-    minCombinedProbability: 0.75,
+    minCombinedProbability: 0.55,
     oneSelectionPerMatch: true,
     /**
      * The safe end of the bulletin, in markets a reader already knows. 6+ goals
