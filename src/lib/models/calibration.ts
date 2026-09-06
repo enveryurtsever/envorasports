@@ -48,6 +48,15 @@ export interface CalibrationResult {
   probabilities: SelectionProbabilities;
   /** Groups that had a complete set of prices and were actually blended. */
   calibratedGroups: string[][];
+  /**
+   * The vig-free market view, per selection, for every group that had a
+   * complete set of prices.
+   *
+   * Kept separate from the blended output on purpose: a stored prediction has
+   * to be able to answer "what did the model think" and "what did the market
+   * think" independently, or an edge cannot be audited after the fact.
+   */
+  marketProbabilities: SelectionProbabilities;
 }
 
 /** Guards the log: a probability of exactly 0 or 1 has no finite log-odds. */
@@ -86,10 +95,10 @@ export function blendWithMarket(
   weight: number,
 ): CalibrationResult {
   const w = Math.max(0, Math.min(1, weight));
-  if (w === 0) return { probabilities, calibratedGroups: [] };
 
   const output = new Map(probabilities);
   const calibrated: string[][] = [];
+  const marketProbabilities: SelectionProbabilities = new Map();
 
   for (const group of calibrationGroups()) {
     const prices = group.map((code) => quotes.get(code));
@@ -97,6 +106,14 @@ export function blendWithMarket(
     if (prices.some((price) => price === undefined || price.lessThanOrEqualTo(1))) continue;
 
     const fair = removeVig(prices as Decimal[]);
+    // Recorded whatever the blend weight is: at w=0 the model ignores the
+    // market, but the market's own view is still the thing an edge is measured
+    // against, so it has to be stored either way.
+    group.forEach((code, index) => marketProbabilities.set(code, fair[index] as Decimal));
+
+    // A weight of zero means the model keeps its own view untouched. The
+    // de-vigged prices above are still collected.
+    if (w === 0) continue;
 
     // Blend first, then renormalise. Log-odds blending is done one outcome at a
     // time and does not preserve the sum, so without this the three 1X2
@@ -132,5 +149,16 @@ export function blendWithMarket(
   const bttsYes = output.get('BTTS_YES');
   if (bttsYes) output.set('BTTS_NO', dec(1).minus(bttsYes));
 
-  return { probabilities: output, calibratedGroups: calibrated };
+  // Double chance has no price of its own here, so its market view is the union
+  // of the de-vigged 1X2 — the same identity the model side uses.
+  const fairHome = marketProbabilities.get('MS_1');
+  const fairDraw = marketProbabilities.get('MS_X');
+  const fairAway = marketProbabilities.get('MS_2');
+  if (fairHome && fairDraw && fairAway) {
+    marketProbabilities.set('DOUBLE_CHANCE_1X', fairHome.plus(fairDraw));
+    marketProbabilities.set('DOUBLE_CHANCE_X2', fairDraw.plus(fairAway));
+    marketProbabilities.set('DOUBLE_CHANCE_12', fairHome.plus(fairAway));
+  }
+
+  return { probabilities: output, calibratedGroups: calibrated, marketProbabilities };
 }

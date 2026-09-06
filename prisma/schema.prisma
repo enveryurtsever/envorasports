@@ -362,6 +362,7 @@ model Match {
   headToHead       HeadToHead[]
   resultSnapshots  MatchResultSnapshot[]
   couponSelections CouponSelection[]
+  coverageReports  PredictionCoverage[]
 
   @@unique([source, externalId])
   @@index([scheduledKickoffUtc, status])
@@ -744,6 +745,27 @@ model Prediction {
   /// The exact result used to settle, kept for audit.
   settlementSnapshot Json?            @map("settlement_snapshot")
 
+  /// The exact configuration revision inside the model version, so two runs of
+  /// "ensemble v2" with different weights are still tellable apart (P0 audit).
+  modelConfigVersion String? @map("model_config_version")
+
+  /// Vig-free market consensus for this selection, kept separate from the
+  /// model's own view. `probability` is the model (after calibration);
+  /// this is what the bookmakers collectively said.
+  marketProbability Decimal? @map("market_probability") @db.Decimal(9, 8)
+  /// 1 / probability — the price at which this bet would be break-even.
+  fairOdds          Decimal? @map("fair_odds") @db.Decimal(12, 3)
+
+  /// When the price used was captured, and how old it was at prediction time.
+  /// Stale prices are the quietest way to produce a confident wrong answer.
+  oddsCapturedAt DateTime? @map("odds_captured_at")
+  oddsAgeMinutes Int?      @map("odds_age_minutes")
+
+  /// Set when a later run replaces this row. Never deleted: the record of what
+  /// was believed, and why it stopped being believed, is the audit trail.
+  supersededAt     DateTime? @map("superseded_at")
+  supersededReason String?   @map("superseded_reason")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   match        Match            @relation(fields: [matchId], references: [id], onDelete: Cascade)
@@ -754,6 +776,7 @@ model Prediction {
   couponSelections CouponSelection[]
 
   @@unique([matchId, selectionId, modelVersionId, predictionTimestamp])
+  @@index([supersededAt])
   @@index([matchId, modelVersionId])
   @@index([modelVersionId, predictionTimestamp])
   @@index([status, predictionTimestamp])
@@ -795,13 +818,13 @@ model CouponCategorySetting {
   minSelections Int @map("min_selections")
   maxSelections Int @map("max_selections")
 
-  minConfidence    Decimal @map("min_confidence") @db.Decimal(5, 4)
-  minExpectedValue Decimal @map("min_expected_value") @db.Decimal(10, 6)
-  minEdge          Decimal @map("min_edge") @db.Decimal(10, 6)
-  minProbability   Decimal @map("min_probability") @db.Decimal(9, 8)
-  maxRisk          Decimal @map("max_risk") @db.Decimal(5, 4)
-  maxCorrelation   Decimal @map("max_correlation") @db.Decimal(5, 4)
-  minDataQuality   Decimal @map("min_data_quality") @db.Decimal(5, 4)
+  minConfidence          Decimal @map("min_confidence") @db.Decimal(5, 4)
+  minExpectedValue       Decimal @map("min_expected_value") @db.Decimal(10, 6)
+  minEdge                Decimal @map("min_edge") @db.Decimal(10, 6)
+  minProbability         Decimal @map("min_probability") @db.Decimal(9, 8)
+  maxRisk                Decimal @map("max_risk") @db.Decimal(5, 4)
+  maxCorrelation         Decimal @map("max_correlation") @db.Decimal(5, 4)
+  minDataQuality         Decimal @map("min_data_quality") @db.Decimal(5, 4)
   /// Floor on the chance the whole coupon lands, not on any single leg. This is
   /// the inverse of the odds floor: a coupon cannot be both long and likely.
   minCombinedProbability Decimal @default(0) @map("min_combined_probability") @db.Decimal(9, 8)
@@ -1434,4 +1457,97 @@ model DailyStatistic {
   @@unique([targetDate, category, marketCode, leagueId, modelVersionId])
   @@index([targetDate])
   @@map("daily_statistics")
+}
+
+// ===========================================================================
+// OPERATIONAL AUDIT — why a fixture has no prediction, and what the provider
+// budget actually looked like at the time (P0/P1).
+// ===========================================================================
+
+/// Why a fixture in the coverage window did or did not produce predictions.
+///
+/// "32 of 48 have predictions" is not a diagnosis. One row per fixture per
+/// prediction run turns that number into a list of causes.
+enum PredictionCoverageReason {
+  /// Predictions were written for this fixture.
+  PREDICTED
+  /// No price exists for any selection we model, so nothing is actionable.
+  NO_ODDS
+  /// Prices exist but every one of them is older than the freshness bar.
+  STALE_ODDS
+  /// Neither side has enough finished matches for the features to mean anything.
+  NO_FEATURES
+  /// Features exist but the sample is below the model's minimum.
+  INSUFFICIENT_HISTORY
+  /// Every model reported itself unavailable.
+  MODEL_ERROR
+  /// The operator excluded this fixture from generation.
+  EXCLUDED
+  /// The provider budget ran out before this fixture could be priced.
+  QUOTA_EXHAUSTED
+  /// The fixture itself is unusable (missing teams, league, or kickoff).
+  INVALID_FIXTURE
+}
+
+/// One row per fixture per prediction run. Append-only.
+model PredictionCoverage {
+  id             String @id @default(cuid())
+  matchId        String @map("match_id")
+  modelVersionId String @map("model_version_id")
+
+  reason PredictionCoverageReason
+
+  /// Counts as of this run, so a coverage report needs no recomputation.
+  selectionsPriced Int @default(0) @map("selections_priced")
+  predictionsMade  Int @default(0) @map("predictions_made")
+  recommendations  Int @default(0)
+
+  /// Freshest price seen for this fixture, and its age at run time.
+  oddsCapturedAt DateTime? @map("odds_captured_at")
+  oddsAgeMinutes Int?      @map("odds_age_minutes")
+
+  detail Json?
+
+  runAt     DateTime @map("run_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, modelVersionId, runAt])
+  @@index([runAt, reason])
+  @@map("prediction_coverage")
+}
+
+/// The provider budget as a durable fact rather than a number recomputed from
+/// the request log on every call.
+///
+/// The log-derived count could not express "the provider told us it is spent,
+/// and it stays spent until its own window resets" — so an exhausted reading
+/// aged out and let another burst of calls through, every ten minutes, all
+/// night. This row holds that state until `resetAt` actually passes.
+model ProviderQuotaState {
+  id       String @id @default(cuid())
+  provider String @unique
+
+  budget    Int
+  used      Int @default(0)
+  remaining Int @default(0)
+
+  windowStart DateTime @map("window_start")
+  windowEnd   DateTime @map("window_end")
+
+  /// True once the provider itself refused a call for budget reasons. Cleared
+  /// only when `resetAt` passes, never by the passage of a staleness timer.
+  exhausted   Boolean   @default(false)
+  exhaustedAt DateTime? @map("exhausted_at")
+  /// When the provider's own window rolls over. Until then, no call is sent.
+  resetAt     DateTime? @map("reset_at")
+
+  /// Credits spent per endpoint in the current window, for attributing a
+  /// blown budget to the job that blew it.
+  endpointUsage Json? @map("endpoint_usage")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("provider_quota_states")
 }

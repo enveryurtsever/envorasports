@@ -17,6 +17,12 @@ export interface ModelOutput {
    * The ensemble redistributes its weight rather than treating absence as 0.5.
    */
   available: boolean;
+  /**
+   * Why the model did not run, when it did not. Carried through to the stored
+   * breakdown: "xg contributed nothing" and "xg had no data" are different
+   * facts, and only one of them is a reason to change the configuration.
+   */
+  unavailableReason?: string;
   /** 0..1 — how much this model trusts itself given the data it saw. */
   confidence: number;
   probabilities: SelectionProbabilities;
@@ -47,6 +53,7 @@ export function unavailable(name: string, reason: string): ModelOutput {
   return {
     name,
     available: false,
+    unavailableReason: reason,
     confidence: 0,
     probabilities: new Map(),
     features: { reason },

@@ -155,7 +155,9 @@
     "maxDrawdown": "Max drawdown",
     "sampleSize": "Sample size",
     "winProbability": "Chance to land",
-    "returnProbability": "Chance of a return"
+    "returnProbability": "Chance of a return",
+    "legStrength": "Pick strength",
+    "landsShort": "Lands"
   },
   "level": {
     "veryLow": "Very low",

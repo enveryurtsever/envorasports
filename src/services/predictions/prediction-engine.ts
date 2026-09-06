@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, type PredictionCoverageReason } from '@prisma/client';
 import { prisma } from '@/lib/db/prisma';
 import { createLogger } from '@/lib/logging/logger';
 import { Decimal, clampProbability, dec } from '@/lib/math/decimal';
@@ -43,7 +43,22 @@ export interface PredictionRunResult {
   candidatesRecommended: number;
   skippedNoOdds: number;
   skippedNoFeatures: number;
+  skippedStaleOdds: number;
+  predictionsSuperseded: number;
+  /** Fixture counts by coverage reason, so "32 of 48" explains itself. */
+  coverage: Record<string, number>;
 }
+
+/**
+ * How old a price may be and still be worth acting on.
+ *
+ * A prediction against a stale price is not wrong so much as unactionable: the
+ * number it claims an edge over is no longer the number on offer. Predictions
+ * are still computed and stored with their age recorded — throwing the
+ * information away would hide the problem rather than fix it — but a stale
+ * price can never make a selection `recommended`.
+ */
+export const DEFAULT_ODDS_MAX_AGE_MINUTES = 360;
 
 interface BestPrice {
   price: Decimal;
@@ -182,7 +197,11 @@ export interface MatchPrediction {
   models: ModelOutput[];
   modelAgreement: number;
   effectiveWeights: Record<string, number>;
+  configuredWeights: Record<string, number>;
   contributingModels: string[];
+  disabledModels: string[];
+  unavailableModels: Array<{ name: string; reason: string; configuredWeight: number }>;
+  redistributedWeight: number;
   perModel: Record<string, Record<string, number>>;
   homeForm: TeamFormBundle;
   awayForm: TeamFormBundle;
@@ -191,6 +210,15 @@ export interface MatchPrediction {
 }
 
 export interface ModelConfiguration {
+  /**
+   * Revision of the configuration *inside* a model version.
+   *
+   * The model version says which code ran; this says which numbers it ran
+   * with. Two publications of "ensemble v2" with different weights are
+   * otherwise indistinguishable in the record, which makes an audit of a past
+   * prediction impossible.
+   */
+  configVersion: string;
   weights: ModelWeights;
   elo: typeof DEFAULT_ELO_CONFIG;
   poisson: { maxGoals: number; shrinkage: number; homeAdvantage: number };
@@ -202,20 +230,40 @@ export interface ModelConfiguration {
   marketPriorWeight: number;
 }
 
+/**
+ * Values used only when the stored model version omits them.
+ *
+ * These are a compatibility floor for rows written before a field existed, not
+ * the place to tune the model: a live change belongs in the ModelVersion
+ * configuration, where it is versioned and shows up in the audit trail.
+ */
+export const MODEL_CONFIGURATION_FALLBACKS = {
+  configVersion: 'unversioned',
+  marketPriorWeight: 0.35,
+  poisson: { maxGoals: 10, shrinkage: 0.25, homeAdvantage: 1.12 },
+} as const;
+
 export function readModelConfiguration(configuration: unknown): ModelConfiguration {
   const config = (configuration ?? {}) as Record<string, unknown>;
   const poisson = (config.poisson ?? {}) as Record<string, number>;
 
   return {
+    configVersion:
+      typeof config.configVersion === 'string'
+        ? config.configVersion
+        : MODEL_CONFIGURATION_FALLBACKS.configVersion,
     weights: (config.weights as ModelWeights) ?? DEFAULT_MODEL_WEIGHTS,
     elo: { ...DEFAULT_ELO_CONFIG, ...((config.elo ?? {}) as object) },
     poisson: {
-      maxGoals: poisson.maxGoals ?? 10,
-      shrinkage: poisson.shrinkage ?? 0.25,
-      homeAdvantage: poisson.homeAdvantage ?? 1.12,
+      maxGoals: poisson.maxGoals ?? MODEL_CONFIGURATION_FALLBACKS.poisson.maxGoals,
+      shrinkage: poisson.shrinkage ?? MODEL_CONFIGURATION_FALLBACKS.poisson.shrinkage,
+      homeAdvantage:
+        poisson.homeAdvantage ?? MODEL_CONFIGURATION_FALLBACKS.poisson.homeAdvantage,
     },
     marketPriorWeight:
-      typeof config.marketPriorWeight === 'number' ? config.marketPriorWeight : 0.35,
+      typeof config.marketPriorWeight === 'number'
+        ? config.marketPriorWeight
+        : MODEL_CONFIGURATION_FALLBACKS.marketPriorWeight,
   };
 }
 
@@ -278,7 +326,11 @@ export async function computeMatchPrediction(
     models,
     modelAgreement: ensemble.modelAgreement,
     effectiveWeights: ensemble.effectiveWeights,
+    configuredWeights: ensemble.configuredWeights,
     contributingModels: ensemble.contributingModels,
+    disabledModels: ensemble.disabledModels,
+    unavailableModels: ensemble.unavailableModels,
+    redistributedWeight: ensemble.redistributedWeight,
     perModel: ensemble.perModel,
     homeForm,
     awayForm,
@@ -300,7 +352,7 @@ export async function runPredictions(
 
   const config = readModelConfiguration(modelVersion.configuration);
 
-  const [minEdge, minEv, minProbability] = await Promise.all([
+  const [minEdge, minEv, minProbability, oddsMaxAgeMinutes] = await Promise.all([
     getAppSetting<number>('prediction.minEdge', 0.02),
     getAppSetting<number>('prediction.minExpectedValue', 0.02),
     /**
@@ -311,6 +363,7 @@ export async function runPredictions(
      * at the best-looking ROI bucket — that would be fitting to one sample.
      */
     getAppSetting<number>('prediction.minProbability', 0.25),
+    getAppSetting<number>('prediction.oddsMaxAgeMinutes', DEFAULT_ODDS_MAX_AGE_MINUTES),
   ]);
 
   const matches = await prisma.match.findMany({
@@ -340,6 +393,26 @@ export async function runPredictions(
     candidatesRecommended: 0,
     skippedNoOdds: 0,
     skippedNoFeatures: 0,
+    skippedStaleOdds: 0,
+    predictionsSuperseded: 0,
+    coverage: {},
+  };
+
+  const coverageRows: Prisma.PredictionCoverageCreateManyInput[] = [];
+  /** Records why a fixture ended up where it did, exactly once per run. */
+  const noteCoverage = (
+    matchId: string,
+    reason: PredictionCoverageReason,
+    extra: Partial<Prisma.PredictionCoverageCreateManyInput> = {},
+  ) => {
+    result.coverage[reason] = (result.coverage[reason] ?? 0) + 1;
+    coverageRows.push({
+      matchId,
+      modelVersionId: modelVersion.id,
+      reason,
+      runAt: asOf,
+      ...extra,
+    });
   };
 
   const leagueAverageCache = new Map<string, { homeGoals: number; awayGoals: number; sampleSize: number }>();

@@ -22,7 +22,22 @@ export interface EnsembleResult {
   modelAgreement: number;
   /** Weight actually applied to each model after redistribution. */
   effectiveWeights: Record<string, number>;
+  /** What the configuration asked for, before availability was considered. */
+  configuredWeights: Record<string, number>;
   contributingModels: string[];
+  /**
+   * Models the configuration switched off (weight 0). These are a decision,
+   * not a data problem, and nothing is redistributed on their behalf.
+   */
+  disabledModels: string[];
+  /**
+   * Models that were expected to vote and could not, with the reason. Their
+   * weight *was* redistributed, which is a silent change to the answer unless
+   * it is written down — so it is written down.
+   */
+  unavailableModels: Array<{ name: string; reason: string; configuredWeight: number }>;
+  /** Configured weight that had to be redistributed because a model was absent. */
+  redistributedWeight: number;
   /** Per-model 1X2 view, for the explanation panel. */
   perModel: Record<string, Record<string, number>>;
 }
@@ -30,14 +45,47 @@ export interface EnsembleResult {
 const AGREEMENT_MARKETS = ['MS_1', 'MS_X', 'MS_2'];
 
 export function runEnsemble(models: ModelOutput[], weights: ModelWeights): EnsembleResult {
-  const available = models.filter((model) => model.available && model.probabilities.size > 0);
+  const configuredWeights = weights as unknown as Record<string, number>;
+  const weightOf = (name: string) => configuredWeights[name] ?? 0;
+
+  /**
+   * Three distinct states, kept distinct.
+   *
+   * A model at weight 0 is switched off by configuration — that is a decision
+   * and there is nothing to redistribute. A model at weight > 0 that could not
+   * run had its share handed to the others, which changes every number
+   * downstream; that is a fact about the data and it is recorded rather than
+   * absorbed. Only what is left actually votes.
+   */
+  const disabledModels = models.filter((model) => weightOf(model.name) === 0).map((m) => m.name);
+
+  const unavailableModels = models
+    .filter(
+      (model) =>
+        weightOf(model.name) > 0 && (!model.available || model.probabilities.size === 0),
+    )
+    .map((model) => ({
+      name: model.name,
+      reason: model.unavailableReason ?? 'no_probabilities',
+      configuredWeight: weightOf(model.name),
+    }));
+
+  const redistributedWeight = unavailableModels.reduce((sum, m) => sum + m.configuredWeight, 0);
+
+  const available = models.filter(
+    (model) => model.available && model.probabilities.size > 0 && weightOf(model.name) > 0,
+  );
 
   if (available.length === 0) {
     return {
       probabilities: new Map(),
       modelAgreement: 0,
       effectiveWeights: {},
+      configuredWeights: { ...configuredWeights },
       contributingModels: [],
+      disabledModels,
+      unavailableModels,
+      redistributedWeight,
       perModel: {},
     };
   }
@@ -45,7 +93,7 @@ export function runEnsemble(models: ModelOutput[], weights: ModelWeights): Ensem
   // Redistribute the missing models' weight over those that ran, and scale each
   // by its own confidence so a model working from three matches counts less.
   const rawWeights = available.map((model) => {
-    const configured = (weights as Record<string, number>)[model.name] ?? 0;
+    const configured = weightOf(model.name);
     return { model, weight: configured * Math.max(0.1, model.confidence) };
   });
 
@@ -83,7 +131,11 @@ export function runEnsemble(models: ModelOutput[], weights: ModelWeights): Ensem
     effectiveWeights: Object.fromEntries(
       effective.map((entry) => [entry.model.name, Number(entry.weight.toFixed(4))]),
     ),
+    configuredWeights: { ...configuredWeights },
     contributingModels: effective.map((entry) => entry.model.name),
+    disabledModels,
+    unavailableModels,
+    redistributedWeight,
     perModel: Object.fromEntries(
       available.map((model) => [
         model.name,

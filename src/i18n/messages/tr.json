@@ -155,7 +155,9 @@
     "maxDrawdown": "Maksimum düşüş",
     "sampleSize": "Örneklem büyüklüğü",
     "winProbability": "Tutma olasılığı",
-    "returnProbability": "Getiri olasılığı"
+    "returnProbability": "Getiri olasılığı",
+    "legStrength": "Seçim gücü",
+    "landsShort": "Tutma"
   },
   "level": {
     "veryLow": "Çok düşük",

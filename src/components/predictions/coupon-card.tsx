@@ -69,6 +69,20 @@ export async function CouponCard({
     ? coupon.system.totalReturn
     : (coupon.effectiveOdds ?? coupon.totalOdds) * stake.amount;
 
+  /**
+   * Mean chance of the individual picks.
+   *
+   * A different question from whether the coupon lands, and a fair one to ask:
+   * it says how strong each selection is on its own. It is shown as the larger
+   * figure because it is what a reader looks for first, with the coupon's own
+   * chance directly beneath it — the two are never merged, because a coupon
+   * that comes in 59% of the time must not be advertised as 84%.
+   */
+  const legStrength =
+    coupon.selections.length > 0
+      ? coupon.selections.reduce((sum, s) => sum + s.probability, 0) / coupon.selections.length
+      : 0;
+
   const money = (value: number) =>
     format.number(value, { style: 'currency', currency, maximumFractionDigits: 2 });
 
@@ -131,18 +145,24 @@ export async function CouponCard({
               )}
             >
               <span className="block text-[0.55rem] leading-none tracking-wide text-muted uppercase">
-                {/* A system pays out when its smallest size lands, not when
-                    every leg does, so its number answers a different question
-                    and must not be read as the chance of the maximum return. */}
-                {coupon.system ? tm('returnProbability') : tm('winProbability')}
+                {tm('legStrength')}
               </span>
               <span
                 className={cn(
                   'tabular mt-0.5 block text-base leading-none font-bold',
-                  METRIC_TOKENS.modelProbability.text,
+                  METRIC_TOKENS.confidence.text,
                 )}
               >
-                {format.number(coupon.estimatedProbability, 'percent')}
+                {format.number(legStrength, 'percent')}
+              </span>
+              {/* The coupon's own chance, kept beside it. A system pays when its
+                  smallest size lands, so its number answers a different
+                  question again and is labelled accordingly. */}
+              <span className="mt-1 block border-t border-white/10 pt-1 text-[0.55rem] leading-none text-muted">
+                {coupon.system ? tm('returnProbability') : tm('landsShort')}{' '}
+                <span className={cn('tabular font-semibold', METRIC_TOKENS.modelProbability.text)}>
+                  {format.number(coupon.estimatedProbability, 'percent')}
+                </span>
               </span>
             </span>
           )}
