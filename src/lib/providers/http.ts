@@ -1,9 +1,31 @@
 import { prisma } from '@/lib/db/prisma';
 import { createLogger } from '@/lib/logging/logger';
 import { ProviderError } from './types';
-import { assertQuotaAvailable, type QuotaPolicy } from './quota';
+import type { QuotaPolicy } from './quota';
+import {
+  assertQuotaAvailable,
+  clearQuotaExhaustion,
+  markQuotaExhausted,
+  recordEndpointUsage,
+} from './quota-manager';
 
 const log = createLogger('provider:http');
+
+/**
+ * What a provider's response body actually says, once its own envelope is read.
+ *
+ * A 200 is not proof of success. API-Football answers an exhausted account with
+ * HTTP 200, an empty payload and `errors.requests` explaining why — while still
+ * reporting a healthy `x-ratelimit-requests-remaining`. Adapters declare how to
+ * read their envelope here so that answer is understood in one place instead of
+ * being mistaken for an empty result in several.
+ */
+export interface BodyVerdict {
+  ok: boolean;
+  message?: string;
+  /** The provider is refusing work because the budget is spent. */
+  budgetExhausted?: boolean;
+}
 
 export interface HttpClientOptions {
   provider: string;
@@ -14,6 +36,8 @@ export interface HttpClientOptions {
   timeoutMs?: number;
   maxRetries?: number;
   quota?: QuotaPolicy;
+  /** Reads the provider's own error envelope out of an otherwise-OK response. */
+  interpretBody?: (body: unknown) => BodyVerdict;
 }
 
 export interface RequestOptions {
@@ -24,6 +48,11 @@ export interface RequestOptions {
   cost?: number;
   /** Low-priority calls stop before eating into the reserve. */
   respectReserve?: boolean;
+  /**
+   * Lets this call through while the provider is on hold, to discover whether
+   * its window has reset. At most one such call per probe interval.
+   */
+  allowProbe?: boolean;
   signal?: AbortSignal;
 }
 
@@ -98,6 +127,7 @@ export class HttpClient {
       await assertQuotaAvailable(this.options.quota, {
         cost: request.cost ?? 1,
         respectReserve: request.respectReserve,
+        allowProbe: request.allowProbe,
       });
     }
 
@@ -180,6 +210,49 @@ export class HttpClient {
           });
         }
 
+        const body = (await response.json()) as T;
+
+        /**
+         * A 200 is where the provider's own error envelope lives.
+         *
+         * Reading it here rather than in each adapter is the whole point: the
+         * odds adapter did not read it, so fifty "successful" empty responses
+         * a run were recorded as successes while the account was spent. The
+         * response headers cannot be trusted in that state either — the same
+         * reply carried `x-ratelimit-requests-remaining: 99` — so a body that
+         * reports exhaustion discards the header rather than storing it.
+         */
+        const verdict = this.options.interpretBody?.(body) ?? { ok: true };
+
+        if (!verdict.ok) {
+          await this.logRequest({
+            endpoint: request.path,
+            statusCode: response.status,
+            durationMs,
+            success: false,
+            attempt,
+            cost: request.cost ?? 1,
+            quotaRemaining: verdict.budgetExhausted ? null : quotaRemaining,
+            errorMessage: verdict.message ?? 'provider reported an error',
+          });
+
+          if (verdict.budgetExhausted && this.options.quota) {
+            this.lastQuotaRemaining = 0;
+            await markQuotaExhausted(this.options.quota, verdict.message ?? 'budget exhausted');
+          }
+
+          throw new ProviderError(
+            `${this.options.provider} error: ${verdict.message ?? 'unknown'}`,
+            {
+              provider: this.options.provider,
+              endpoint: request.path,
+              statusCode: response.status,
+              // Retrying an exhausted budget is how the loop started.
+              retryable: false,
+            },
+          );
+        }
+
         await this.logRequest({
           endpoint: request.path,
           statusCode: response.status,
@@ -190,7 +263,14 @@ export class HttpClient {
           quotaRemaining,
         });
 
-        return (await response.json()) as T;
+        if (this.options.quota) {
+          // A real answer proves the provider is serving, so any hold lifts and
+          // the spend is attributed to the endpoint that caused it.
+          await clearQuotaExhaustion(this.options.quota);
+          await recordEndpointUsage(this.options.quota, request.path, request.cost ?? 1);
+        }
+
+        return body;
       } catch (error) {
         lastError = error;
 

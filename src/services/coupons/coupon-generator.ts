@@ -134,6 +134,9 @@ export async function loadCandidates(
        * filterForCategory applies them; that is the gate.
        */
       status: 'PENDING',
+      // A withdrawn view must never reach a coupon. The engine marks the old
+      // generation superseded when it re-runs; this is where that matters.
+      supersededAt: null,
       predictionTimestamp: { lte: asOf },
       match: {
         status: 'SCHEDULED',

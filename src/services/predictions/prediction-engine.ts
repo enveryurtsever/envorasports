@@ -421,8 +421,27 @@ export async function runPredictions(
     const prices = await getBestPrices(match.id, asOf);
     if (prices.size === 0) {
       result.skippedNoOdds++;
+      noteCoverage(match.id, 'NO_ODDS');
       continue;
     }
+
+    /**
+     * Age of the freshest price this fixture has.
+     *
+     * Measured once per fixture rather than per selection: a bulletin is
+     * captured in one pass, so the whole fixture is fresh or the whole fixture
+     * is stale, and reporting it per fixture is what a coverage report needs.
+     */
+    const newestCapture = [...prices.values()].reduce(
+      (newest, quote) => (quote.capturedAt > newest ? quote.capturedAt : newest),
+      new Date(0),
+    );
+    const oddsAgeMinutes = Math.max(
+      0,
+      Math.round((asOf.getTime() - newestCapture.getTime()) / 60_000),
+    );
+    const oddsAreStale = oddsAgeMinutes > oddsMaxAgeMinutes;
+    if (oddsAreStale) result.skippedStaleOdds++;
 
     let leagueAverages = leagueAverageCache.get(match.leagueId);
     if (!leagueAverages) {
@@ -445,6 +464,26 @@ export async function runPredictions(
 
     if (!prediction) {
       result.skippedNoFeatures++;
+      noteCoverage(match.id, 'NO_FEATURES', {
+        selectionsPriced: prices.size,
+        oddsCapturedAt: newestCapture,
+        oddsAgeMinutes,
+      });
+      continue;
+    }
+
+    // Every model reported itself unavailable: there is no opinion to store.
+    if (prediction.contributingModels.length === 0) {
+      result.skippedNoFeatures++;
+      noteCoverage(match.id, 'MODEL_ERROR', {
+        selectionsPriced: prices.size,
+        oddsCapturedAt: newestCapture,
+        oddsAgeMinutes,
+        detail: {
+          unavailableModels: prediction.unavailableModels,
+          disabledModels: prediction.disabledModels,
+        } as Prisma.InputJsonValue,
+      });
       continue;
     }
     result.matchesPriced++;
@@ -489,10 +528,24 @@ export async function runPredictions(
         eloKnown: prediction.eloKnown,
       });
 
+      /**
+       * Confidence is how much the *inputs* can be trusted, not how likely the
+       * outcome is.
+       *
+       * Probability answers "will this happen"; confidence answers "should this
+       * number be believed at all" — model agreement, data completeness, market
+       * depth and how old the price is. The two were entangled: a 30%
+       * probability term meant a longshot could never be confidently priced
+       * even on perfect data, and a favourite looked well-supported on none.
+       * Keeping them separate is what lets a coupon filter on one without
+       * silently filtering on the other.
+       */
+      const freshness = Math.max(0, 1 - oddsAgeMinutes / Math.max(1, oddsMaxAgeMinutes));
       const confidence = clampProbability(
-        dec(ensemble.modelAgreement * 0.45)
-          .plus(dec(quality).times(0.25))
-          .plus(probability.times(0.3)),
+        dec(ensemble.modelAgreement * 0.4)
+          .plus(dec(quality).times(0.35))
+          .plus(dec(freshness).times(0.15))
+          .plus(dec(Math.min(1, price.quoteCount / 4)).times(0.1)),
       );
 
       // Risk rises with longshots, model disagreement, thin data and a market
@@ -506,11 +559,25 @@ export async function runPredictions(
           .plus(dec(Math.min(1, price.dispersion * 2)).times(0.1)),
       );
 
+      /**
+       * Recommendation is a separate decision from prediction.
+       *
+       * A prediction is a view; a recommendation is a claim that the view is
+       * actionable at the price on offer. A stale price fails that test however
+       * good the model's opinion is — the number the edge was measured against
+       * is no longer the number being sold.
+       */
       const recommended =
+        !oddsAreStale &&
         Number(edgeValue) >= minEdge &&
         Number(ev) >= minEv &&
         Number(probability) >= minProbability;
       if (recommended) result.candidatesRecommended++;
+
+      const marketProbability = calibrated.marketProbabilities.get(selectionCode) ?? null;
+      // Break-even price for the model's own number. Stored rather than derived
+      // on read so an audit sees exactly what was claimed at the time.
+      const fairOdds = probability.greaterThan(0) ? dec(1).dividedBy(probability) : null;
 
       rows.push({
         matchId: match.id,
@@ -521,6 +588,12 @@ export async function runPredictions(
         oddsUsed: new Prisma.Decimal(price.price.toFixed(3)),
         oddsId: price.oddsId,
         impliedProbability: new Prisma.Decimal(implied.toFixed(8)),
+        marketProbability:
+          marketProbability === null ? null : new Prisma.Decimal(marketProbability.toFixed(8)),
+        fairOdds: fairOdds === null ? null : new Prisma.Decimal(fairOdds.toFixed(3)),
+        oddsCapturedAt: price.capturedAt,
+        oddsAgeMinutes,
+        modelConfigVersion: config.configVersion,
         edge: new Prisma.Decimal(edgeValue.toFixed(6)),
         expectedValue: new Prisma.Decimal(ev.toFixed(6)),
         confidenceScore: new Prisma.Decimal(confidence.toFixed(4)),
@@ -533,11 +606,24 @@ export async function runPredictions(
           models: Object.fromEntries(models.map((m) => [m.name, m.features])),
           modelAgreement: Number(ensemble.modelAgreement.toFixed(4)),
           effectiveWeights: ensemble.effectiveWeights,
+          configuredWeights: ensemble.configuredWeights,
           contributingModels: ensemble.contributingModels,
+          // Off by configuration versus absent for want of data: two different
+          // facts, and only one of them is a reason to change anything.
+          disabledModels: ensemble.disabledModels,
+          unavailableModels: ensemble.unavailableModels,
+          redistributedWeight: Number(ensemble.redistributedWeight.toFixed(4)),
           perModelResult: ensemble.perModel,
+          modelConfigVersion: config.configVersion,
           calibration: {
             marketPriorWeight: config.marketPriorWeight,
             groupsCalibrated: calibrated.calibratedGroups.length,
+          },
+          oddsFreshness: {
+            capturedAt: price.capturedAt.toISOString(),
+            ageMinutes: oddsAgeMinutes,
+            maxAgeMinutes: oddsMaxAgeMinutes,
+            stale: oddsAreStale,
           },
           market: {
             quoteCount: price.quoteCount,
@@ -549,9 +635,51 @@ export async function runPredictions(
     }
 
     if (rows.length > 0) {
+      /**
+       * Retire the previous generation before writing the new one.
+       *
+       * Predictions are append-only, so a re-run leaves several opinions about
+       * the same selection and downstream readers had to guess which was
+       * current by comparing timestamps. Marking the old rows superseded says
+       * so outright, keeps the full history for audit, and means a coupon can
+       * never be built on a view the engine has already withdrawn.
+       */
+      const superseded = await prisma.prediction.updateMany({
+        where: {
+          matchId: match.id,
+          modelVersionId: modelVersion.id,
+          predictionTimestamp: { lt: asOf },
+          supersededAt: null,
+          // A settled prediction is a historical fact, not a live view.
+          status: 'PENDING',
+        },
+        data: { supersededAt: asOf, supersededReason: 'REPLACED_BY_NEWER_RUN' },
+      });
+      result.predictionsSuperseded += superseded.count;
+
       const written = await prisma.prediction.createMany({ data: rows, skipDuplicates: true });
       result.predictionsWritten += written.count;
+
+      noteCoverage(match.id, oddsAreStale ? 'STALE_ODDS' : 'PREDICTED', {
+        selectionsPriced: prices.size,
+        predictionsMade: written.count,
+        recommendations: rows.filter((row) => row.recommended).length,
+        oddsCapturedAt: newestCapture,
+        oddsAgeMinutes,
+      });
+    } else {
+      // Priced, modelled, but no selection the model had a view on.
+      noteCoverage(match.id, 'NO_FEATURES', {
+        selectionsPriced: prices.size,
+        oddsCapturedAt: newestCapture,
+        oddsAgeMinutes,
+        detail: { note: 'no_modelled_selection_priced' } as Prisma.InputJsonValue,
+      });
     }
+  }
+
+  if (coverageRows.length > 0) {
+    await prisma.predictionCoverage.createMany({ data: coverageRows, skipDuplicates: true });
   }
 
   log.info('prediction run complete', { ...result, asOf: asOf.toISOString() });

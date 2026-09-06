@@ -110,9 +110,10 @@ export async function getMatchAnalysis(
 
   if (!match) return null;
 
-  // The newest generation of predictions for this match.
+  // The newest generation of predictions for this match. Superseded rows are
+  // kept in the database for audit but are not what the page is describing.
   const predictions = await prisma.prediction.findMany({
-    where: { matchId },
+    where: { matchId, supersededAt: null },
     orderBy: { predictionTimestamp: 'desc' },
     select: {
       selectionId: true,

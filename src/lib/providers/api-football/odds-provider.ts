@@ -11,6 +11,7 @@ import {
   overUnderCode,
 } from '@/lib/markets/registry';
 import type { OddsProvider, ProviderBulletin, ProviderOdds, ProviderOddsEvent } from '../types';
+import { interpretApiFootballBody } from './envelope';
 
 export const API_FOOTBALL_ODDS = 'api-football';
 
@@ -292,6 +293,15 @@ interface ApiFootballEnvelope<T> {
   paging?: { current: number; total: number };
 }
 
+/** True when the call failed because the day's allowance is gone. */
+function isBudgetFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.name === 'QuotaExceededError' ||
+    /budget exhausted|request limit for the day|upgrade your plan/i.test(error.message)
+  );
+}
+
 export function createApiFootballOddsProvider(config: {
   apiKey: string;
   baseUrl: string;
@@ -315,9 +325,22 @@ export function createApiFootballOddsProvider(config: {
     headers: { 'x-apisports-key': config.apiKey },
     // Free plan: ten a minute, shared with the fixture client's allowance.
     requestsPerMinute: 10,
+    /**
+     * The omission that cost the budget.
+     *
+     * This adapter built its own client and never read the envelope, so an
+     * exhausted account produced fifty 200s an hour that looked like fixtures
+     * simply having no prices. They were recorded as successes, the guard saw
+     * a healthy header, and nothing ever stopped.
+     */
+    interpretBody: interpretApiFootballBody,
   });
 
-  async function fetchFixture(fixtureId: string, capturedAt: Date): Promise<ProviderOddsEvent | null> {
+  async function fetchFixture(
+    fixtureId: string,
+    capturedAt: Date,
+    options: { allowProbe?: boolean } = {},
+  ): Promise<ProviderOddsEvent | null> {
     const query: Record<string, string> = { fixture: fixtureId };
     if (config.bookmakerId) query.bookmaker = String(config.bookmakerId);
 
@@ -325,6 +348,15 @@ export function createApiFootballOddsProvider(config: {
       path: '/odds',
       query,
       cost: 1,
+      /**
+       * Odds are the lower priority of the two things this budget buys.
+       *
+       * A stale price makes a coupon less sharp; a missed result leaves it
+       * unsettled. So pricing stops at the reserve and settlement keeps its
+       * share, instead of the two racing for the same hundred requests.
+       */
+      respectReserve: true,
+      allowProbe: options.allowProbe,
     });
 
     const entry = envelope.response?.[0];
@@ -449,11 +481,28 @@ export function createApiFootballOddsProvider(config: {
       const capturedAt = new Date();
       const events: ProviderOddsEvent[] = [];
 
-      for (const fixtureId of fixtureExternalIds) {
+      for (const [index, fixtureId] of fixtureExternalIds.entries()) {
         try {
-          const event = await fetchFixture(fixtureId, capturedAt);
+          // Only the first call may probe a held budget; if the provider is
+          // still spent it says so and the loop stops immediately below.
+          const event = await fetchFixture(fixtureId, capturedAt, { allowProbe: index === 0 });
           if (event) events.push(event);
         } catch (error) {
+          /**
+           * A budget failure ends the run; anything else skips one fixture.
+           *
+           * Carrying on through an exhausted budget is what turned one refusal
+           * into fifty identical ones per run — each logged, each pointless.
+           * The first fixture's answer is the answer for all of them.
+           */
+          if (isBudgetFailure(error)) {
+            log.warn('stopping bulletin: provider budget is spent', {
+              priced: events.length,
+              remaining: fixtureExternalIds.length - index,
+            });
+            break;
+          }
+
           // One unpriced fixture must not empty the bulletin (§43).
           log.warn('fixture odds fetch failed, continuing', {
             fixture: fixtureId,

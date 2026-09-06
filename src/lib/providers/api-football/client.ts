@@ -1,6 +1,7 @@
 import { HttpClient } from '../http';
 import { ProviderError } from '../types';
 import type { QuotaPolicy } from '../quota';
+import { interpretApiFootballBody } from './envelope';
 
 export const API_FOOTBALL = 'api-football';
 
@@ -15,18 +16,17 @@ export interface ApiFootballEnvelope<T> {
 }
 
 /**
- * API-Football signals failures inside a 200 response — `errors` becomes a
- * non-empty object while the status code stays OK. Treating that as success is
- * how you end up storing an empty bulletin and calling it "no matches today".
+ * Second line of defence.
+ *
+ * The HTTP client now reads the same envelope and throws before this is
+ * reached, which is what makes the check apply to *every* adapter rather than
+ * the ones that remembered to call it. This stays for direct callers and as a
+ * guard against a client constructed without the interpreter.
  */
 function assertNoApiErrors(envelope: ApiFootballEnvelope<unknown>, endpoint: string): void {
-  const { errors } = envelope;
-  const hasErrors = Array.isArray(errors)
-    ? errors.length > 0
-    : typeof errors === 'object' && errors !== null && Object.keys(errors).length > 0;
-
-  if (hasErrors) {
-    throw new ProviderError(`API-Football error: ${JSON.stringify(errors)}`, {
+  const verdict = interpretApiFootballBody(envelope);
+  if (!verdict.ok) {
+    throw new ProviderError(`API-Football error: ${verdict.message}`, {
       provider: API_FOOTBALL,
       endpoint,
       retryable: false,
@@ -50,6 +50,7 @@ export function createApiFootballClient(config: {
     timeoutMs: 20_000,
     maxRetries: 3,
     quota: config.quota,
+    interpretBody: interpretApiFootballBody,
   });
 
   return {

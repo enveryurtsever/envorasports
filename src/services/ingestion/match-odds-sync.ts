@@ -1,7 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db/prisma';
 import { createLogger } from '@/lib/logging/logger';
-import { getMatchOddsProvider, API_FOOTBALL_ODDS } from '@/lib/providers';
+import { getMatchOddsProvider, API_FOOTBALL_ODDS, footballQuotaPolicy } from '@/lib/providers';
+import { getQuotaSnapshot } from '@/lib/providers/quota-manager';
 import { getAppSetting } from '@/lib/config/settings-service';
 import type { CoverageWindow } from '@/lib/schedule/bulletin-schedule';
 
@@ -24,19 +25,40 @@ const log = createLogger('ingestion:match-odds');
 
 export interface MatchOddsSyncResult {
   fixturesConsidered: number;
+  /** Prices already fresh enough to act on; no request was spent on them. */
+  fixturesFresh: number;
+  /** Wanted a refresh but the budget could not reach them this run. */
+  fixturesDeferred: number;
   fixturesRequested: number;
   fixturesPriced: number;
   pricesStored: number;
   marketsSeen: string[];
   quotaRemaining: number | null;
+  /** Requests this run was allowed to spend, and why it was that number. */
+  requestBudget: number;
+  budgetReason: string;
 }
+
+/**
+ * How stale a fixture's prices must be before spending a request on them.
+ *
+ * The job used to re-request every fixture in the window on every run,
+ * regardless of whether it had been priced minutes earlier: fifty requests a
+ * run, four runs a day, against a hundred-request budget. Structurally over
+ * budget before a single price moved.
+ */
+const DEFAULT_REFRESH_AFTER_MINUTES = 240;
 
 export async function syncMatchOddsForWindow(
   window: CoverageWindow,
-  options: { maxFixtures?: number } = {},
+  options: { maxFixtures?: number; now?: Date } = {},
 ): Promise<MatchOddsSyncResult> {
-  const maxFixtures =
-    options.maxFixtures ?? (await getAppSetting<number>('odds.maxFixturesPerRun', 30));
+  const now = options.now ?? new Date();
+  const [configuredMax, refreshAfterMinutes] = await Promise.all([
+    getAppSetting<number>('odds.maxFixturesPerRun', 30),
+    getAppSetting<number>('odds.refreshAfterMinutes', DEFAULT_REFRESH_AFTER_MINUTES),
+  ]);
+  const maxFixtures = options.maxFixtures ?? configuredMax;
 
   const candidates = await prisma.match.findMany({
     where: {
@@ -56,11 +78,15 @@ export async function syncMatchOddsForWindow(
 
   const result: MatchOddsSyncResult = {
     fixturesConsidered: candidates.length,
+    fixturesFresh: 0,
+    fixturesDeferred: 0,
     fixturesRequested: 0,
     fixturesPriced: 0,
     pricesStored: 0,
     marketsSeen: [],
     quotaRemaining: null,
+    requestBudget: 0,
+    budgetReason: 'not_evaluated',
   };
 
   if (candidates.length === 0) {
@@ -68,20 +94,30 @@ export async function syncMatchOddsForWindow(
     return result;
   }
 
-  const provider = getMatchOddsProvider();
+  const plan = await planOddsRequests(candidates, {
+    now,
+    maxFixtures,
+    refreshAfterMinutes,
+  });
 
-  /**
-   * Which shape is cheaper depends on how much of the day we want.
-   *
-   * A date is 56 pages of ten — every competition the provider carries — so it
-   * only wins when we want more fixtures than that costs. For a bulletin of
-   * fifty it does not: fifty individual requests price exactly the fifty we
-   * care about, where the same spend on pages returns five hundred we do not.
-   * The cap was the real constraint all along, not the request shape.
-   */
-  const DATE_PAGE_COST = 56;
-  const bulkAvailable = provider.getBulletinByDate !== undefined && candidates.length > DATE_PAGE_COST;
-  const requested = bulkAvailable ? candidates : candidates.slice(0, maxFixtures);
+  result.fixturesFresh = plan.fresh;
+  result.fixturesDeferred = plan.deferred;
+  result.requestBudget = plan.budget;
+  result.budgetReason = plan.reason;
+
+  if (plan.targets.length === 0) {
+    log.info('nothing to price this run', {
+      considered: candidates.length,
+      fresh: plan.fresh,
+      deferred: plan.deferred,
+      budget: plan.budget,
+      reason: plan.reason,
+    });
+    return result;
+  }
+
+  const provider = getMatchOddsProvider();
+  const requested = plan.targets;
   result.fixturesRequested = requested.length;
 
   const byExternalId = new Map(requested.map((match) => [match.externalId, match.id]));
@@ -111,6 +147,17 @@ export async function syncMatchOddsForWindow(
     const date = match.scheduledKickoffUtc.toISOString().slice(0, 10);
     groups.set(`${leagueId}:${season}:${date}`, { leagueId, season, date });
   }
+
+  /**
+   * Which shape is cheaper depends on how much of the day we want.
+   *
+   * A whole date is 56 pages of ten — every competition the provider carries —
+   * so it only wins when we want more fixtures than that costs. For a bulletin
+   * of fifty it does not: fifty individual requests price exactly the fifty we
+   * care about, where the same spend on pages returns five hundred we do not.
+   */
+  const DATE_PAGE_COST = 56;
+  const bulkAvailable = provider.getBulletinByDate !== undefined && requested.length > DATE_PAGE_COST;
 
   let bulletin;
   if (bulkAvailable && provider.getBulletinByLeagueDate && groups.size > 0) {
@@ -186,6 +233,103 @@ export async function syncMatchOddsForWindow(
   result.marketsSeen = [...markets].sort();
   log.info('match odds sync complete', { ...result });
   return result;
+}
+
+interface OddsCandidate {
+  id: string;
+  externalId: string;
+  scheduledKickoffUtc: Date;
+  season: { externalId: string } | null;
+}
+
+interface OddsPlan {
+  targets: OddsCandidate[];
+  fresh: number;
+  deferred: number;
+  budget: number;
+  reason: string;
+}
+
+/**
+ * Decides which fixtures are worth a request, and how many requests there are.
+ *
+ * The old job asked for every fixture in the window every run and let the quota
+ * guard sort it out. That is not a plan, it is a hope: fifty requests four
+ * times a day against a hundred-request budget, spent re-fetching prices that
+ * had not moved, leaving nothing for result sync and settlement.
+ *
+ * The order matters as much as the count. Fixtures already sitting on a
+ * published coupon come first — those are the prices a reader is looking at.
+ * Then fixtures with no price at all, because they cannot enter the pool
+ * without one. Then everything else by kickoff. When the budget runs out it
+ * runs out at the bottom of that list, not at an arbitrary point in it.
+ */
+async function planOddsRequests(
+  candidates: OddsCandidate[],
+  options: { now: Date; maxFixtures: number; refreshAfterMinutes: number },
+): Promise<OddsPlan> {
+  const ids = candidates.map((match) => match.id);
+
+  const [captures, coupled, quota] = await Promise.all([
+    prisma.odds.groupBy({
+      by: ['matchId'],
+      where: { matchId: { in: ids } },
+      _max: { capturedAt: true },
+    }),
+    prisma.couponSelection.findMany({
+      where: { matchId: { in: ids }, coupon: { resultStatus: 'PENDING' } },
+      select: { matchId: true },
+      distinct: ['matchId'],
+    }),
+    getQuotaSnapshot(footballQuotaPolicy(), options.now),
+  ]);
+
+  const lastCaptured = new Map(captures.map((row) => [row.matchId, row._max.capturedAt]));
+  const onPendingCoupon = new Set(coupled.map((row) => row.matchId));
+
+  const staleness = (match: OddsCandidate): number => {
+    const captured = lastCaptured.get(match.id);
+    // Never priced: infinitely stale, and the highest-value request there is.
+    if (!captured) return Number.POSITIVE_INFINITY;
+    return (options.now.getTime() - captured.getTime()) / 60_000;
+  };
+
+  const due = candidates.filter((match) => staleness(match) >= options.refreshAfterMinutes);
+  const fresh = candidates.length - due.length;
+
+  due.sort((a, b) => {
+    const couponRank = Number(onPendingCoupon.has(b.id)) - Number(onPendingCoupon.has(a.id));
+    if (couponRank !== 0) return couponRank;
+
+    const unpricedRank = Number(!lastCaptured.get(b.id)) - Number(!lastCaptured.get(a.id));
+    if (unpricedRank !== 0) return unpricedRank;
+
+    return a.scheduledKickoffUtc.getTime() - b.scheduledKickoffUtc.getTime();
+  });
+
+  /**
+   * The budget, stated rather than discovered by hitting the wall.
+   *
+   * A fifth of the day is held back for result sync and settlement — a coupon
+   * that cannot be settled is worse than a coupon priced from a slightly older
+   * quote — so this job plans against what is left after that reserve.
+   */
+  const policy = footballQuotaPolicy();
+  const reserve = Math.ceil(policy.budget * (policy.reserveRatio ?? 0.2));
+  const spendable = Math.max(0, quota.remaining - reserve);
+  const budget = Math.min(options.maxFixtures, spendable);
+
+  const reason = quota.exhausted
+    ? `provider budget exhausted until ${quota.resetAt?.toISOString() ?? 'reset'}`
+    : spendable === 0
+      ? `remaining ${quota.remaining} is inside the ${reserve}-request reserve`
+      : budget < due.length
+        ? `budget ${budget} covers ${budget} of ${due.length} due fixtures`
+        : 'all due fixtures fit inside the budget';
+
+  const targets = due.slice(0, budget);
+
+  return { targets, fresh, deferred: due.length - targets.length, budget, reason };
 }
 
 async function loadMarketIds(): Promise<Map<string, string>> {

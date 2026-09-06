@@ -1,6 +1,3 @@
-import { prisma } from '@/lib/db/prisma';
-import { QuotaExceededError } from './types';
-
 export type QuotaWindow = 'day' | 'month';
 
 export interface QuotaPolicy {
@@ -38,103 +35,40 @@ export function windowBounds(window: QuotaWindow, now = new Date()): { start: Da
 }
 
 /**
- * Counts real outbound calls from `provider_request_logs`, so the budget
- * survives restarts and is shared across every worker and web process.
+ * Budget state is owned by `quota-manager`.
  *
- * With 100 requests/day on the football side, an accidental loop would burn a
- * whole day of data in seconds. This is the thing standing in the way.
+ * This module keeps the policy types and the window arithmetic; the state
+ * itself moved because it had to become durable. What used to live here read
+ * the request log, trusted the provider's `remaining` header over it, and — on
+ * a reading of zero older than ten minutes — allowed thirty calls through to
+ * "break the deadlock". Against a provider that answers an exhausted account
+ * with HTTP 200 and a header still reporting 99 remaining, that was not a
+ * guard at all: it was a loop, and it burned 391 requests against a budget of
+ * 100 in a single day.
  */
-/** How long a quota reading is trusted before probing again. */
-const STALE_READING_MS = 10 * 60 * 1000;
-/**
- * Calls allowed through on a stale exhausted reading. Enough to clear the
- * reserve so ordinary work resumes; small enough that being wrong costs little,
- * and it costs nothing real either way — an exhausted provider answers 429
- * without serving data, and that answer refreshes the reading immediately.
- */
-const STALE_PROBE_ALLOWANCE = 30;
+export {
+  assertQuotaAvailable,
+  clearQuotaExhaustion,
+  getQuotaSnapshot,
+  markQuotaExhausted,
+  probeIsDue,
+  recordEndpointUsage,
+  type QuotaGateOptions,
+  type QuotaSnapshot,
+} from './quota-manager';
 
+import { getQuotaSnapshot } from './quota-manager';
+
+/** Backwards-compatible view for the admin monitor and health endpoint. */
 export async function getQuotaState(policy: QuotaPolicy, now = new Date()): Promise<QuotaState> {
-  const { start, end } = windowBounds(policy.window, now);
-  // Sum credits, not rows: one Odds API call with 3 markets costs 3 credits.
-  const aggregate = await prisma.providerRequestLog.aggregate({
-    where: { provider: policy.provider, createdAt: { gte: start, lt: end } },
-    _sum: { cost: true },
-  });
-  const counted = aggregate._sum.cost ?? 0;
-
-  /**
-   * The provider's own header wins when it disagrees with our count.
-   *
-   * Our window is the UTC day; the provider's is its own, and API-Football's
-   * reset mid-morning while ours had not. Our log said 100/100 and refused
-   * every call while the provider was reporting 51 still available — the guard
-   * meant to protect the budget was destroying it instead. The count remains
-   * the fallback for providers that report nothing, and the smaller of the two
-   * still wins, so this can only ever be more cautious than the provider.
-   */
-  const latest = await prisma.providerRequestLog.findFirst({
-    where: {
-      provider: policy.provider,
-      createdAt: { gte: start, lt: end },
-      quotaRemaining: { not: null },
-    },
-    orderBy: { createdAt: 'desc' },
-    select: { quotaRemaining: true, createdAt: true },
-  });
-
-  const reported = latest?.quotaRemaining ?? null;
-  let remaining =
-    reported === null
-      ? Math.max(0, policy.budget - counted)
-      : Math.min(reported, policy.budget);
-
-  /**
-   * A reading of zero must not be permanent.
-   *
-   * The provider's window resets on its own schedule, not ours. Once it had, it
-   * was reporting 41 calls available while our newest stored reading still said
-   * zero — and nothing could refresh that reading, because refreshing it needs
-   * a call and the reading was blocking every call. One probe after the reading
-   * goes stale breaks the deadlock: if the provider really is exhausted it
-   * answers 429, costs nothing, and the stale reading is replaced by a fresh
-   * one that blocks again.
-   */
-  const readingAge = latest ? now.getTime() - latest.createdAt.getTime() : Number.POSITIVE_INFINITY;
-  if (remaining === 0 && readingAge > STALE_READING_MS) remaining = STALE_PROBE_ALLOWANCE;
-
+  const snapshot = await getQuotaSnapshot(policy, now);
   return {
-    provider: policy.provider,
-    window: policy.window,
-    budget: policy.budget,
-    used: policy.budget - remaining,
-    remaining,
-    windowStart: start,
-    windowEnd: end,
+    provider: snapshot.provider,
+    window: snapshot.window,
+    budget: snapshot.budget,
+    used: snapshot.used,
+    remaining: snapshot.remaining,
+    windowStart: snapshot.windowStart,
+    windowEnd: snapshot.windowEnd,
   };
-}
-
-export interface QuotaCheckOptions {
-  /** Number of credits this call will consume. Defaults to 1. */
-  cost?: number;
-  /** Set for low-priority work so it stops before the reserve is touched. */
-  respectReserve?: boolean;
-}
-
-export async function assertQuotaAvailable(
-  policy: QuotaPolicy,
-  options: QuotaCheckOptions = {},
-): Promise<QuotaState> {
-  const cost = options.cost ?? 1;
-  const state = await getQuotaState(policy);
-
-  const reserve = options.respectReserve
-    ? Math.ceil(policy.budget * (policy.reserveRatio ?? 0.2))
-    : 0;
-  const usable = state.remaining - reserve;
-
-  if (usable < cost) {
-    throw new QuotaExceededError(policy.provider, state.used, policy.budget);
-  }
-  return state;
 }

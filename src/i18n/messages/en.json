@@ -156,7 +156,7 @@
     "sampleSize": "Sample size",
     "winProbability": "Chance to land",
     "returnProbability": "Chance of a return",
-    "legStrength": "Pick strength",
+    "legStrength": "Prediction strength",
     "landsShort": "Lands"
   },
   "level": {
