@@ -81,6 +81,17 @@ enum CouponCategory {
   HAYAL
 }
 
+/// Where a HAYAL verdict's price came from.
+enum HayalSignalSource {
+  /// No usable price: the fixture could not be judged either way.
+  NONE
+  /// The real "both teams score in both halves" market.
+  MARKET
+  /// The two halves multiplied. Only used when explicitly enabled, and always
+  /// distinguishable afterwards from a verdict taken off the real market.
+  PROXY
+}
+
 /// Which HAYAL slate a coupon belongs to.
 enum HayalVariant {
   /// BTTS-both-halves under 8.00 only. Over 2.5 / 3.5.
@@ -1597,6 +1608,24 @@ model HayalSignal {
   bttsBothHalvesOdds Decimal? @map("btts_both_halves_odds") @db.Decimal(12, 3)
   /// Decimal price of the half-time score being 2-2.
   halfTime22Odds     Decimal? @map("half_time_2_2_odds") @db.Decimal(12, 3)
+
+  /// The two halves priced separately, and their product.
+  ///
+  /// Recorded on every fixture, and by default it triggers nothing. The product
+  /// is NOT the combined "both halves" bet: the halves are positively
+  /// correlated, so multiplying them understates the true chance and therefore
+  /// quotes a longer price than the real market would. Letting it stand in for
+  /// the real thing would quietly change which claim is under test.
+  ///
+  /// It is stored anyway so that, once a provider serves the real market, the
+  /// two can be compared over the same fixtures and the question "was the proxy
+  /// any good" is answered with data instead of an argument.
+  bttsFirstHalfOdds   Decimal? @map("btts_first_half_odds") @db.Decimal(12, 3)
+  bttsSecondHalfOdds  Decimal? @map("btts_second_half_odds") @db.Decimal(12, 3)
+  proxyBothHalvesOdds Decimal? @map("proxy_both_halves_odds") @db.Decimal(12, 3)
+
+  /// Which price the verdict on this row was actually taken from.
+  signalSource HayalSignalSource @default(NONE) @map("signal_source")
 
   /// The two conditions, stored as evaluated rather than recomputed on read:
   /// the thresholds may be retuned later and old rows must keep their verdict.

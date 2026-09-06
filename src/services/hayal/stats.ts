@@ -199,16 +199,32 @@ function summarise(label: string, rows: Array<{ outcomes: unknown }>): CohortRep
  * 8.00 — the question "was 8.00 the right number" needs exactly that.
  */
 export async function buildHayalReport(): Promise<HayalReport> {
-  const graded = await prisma.hayalSignal.findMany({
+  /**
+   * One row per fixture, whatever the signal history holds.
+   *
+   * Signals are append-only and a fixture accumulates a row every time its
+   * price moves. Counting them all would weight a fixture by how often it was
+   * repriced — a busy market would dominate the hit rate for no reason that has
+   * anything to do with goals. The last verdict before kickoff is the one that
+   * stands, so that is the one counted.
+   */
+  const gradedRows = await prisma.hayalSignal.findMany({
     where: { settledAt: { not: null }, outcomes: { not: Prisma.DbNull } },
+    orderBy: { signalCapturedAt: 'desc' },
     select: {
+      matchId: true,
       outcomes: true,
       premium: true,
       bttsUnderThreshold: true,
       bttsBothHalvesOdds: true,
       halfTime22Odds: true,
+      proxyBothHalvesOdds: true,
     },
   });
+
+  const byMatch = new Map<string, (typeof gradedRows)[number]>();
+  for (const row of gradedRows) if (!byMatch.has(row.matchId)) byMatch.set(row.matchId, row);
+  const graded = [...byMatch.values()];
 
   const priced = graded.filter((row) => row.bttsBothHalvesOdds !== null);
   const under = (row: (typeof graded)[number], limit: number) =>
@@ -219,7 +235,12 @@ export async function buildHayalReport(): Promise<HayalReport> {
   // Baseline: every fixture the signal market was priced for, signal or not.
   // Comparing against *all* fixtures would flatter the signal, because the
   // fixtures carrying this market are not a random sample of the bulletin.
-  const baseline = summarise('all priced fixtures', priced);
+  const baseline = summarise(
+    'all priced fixtures',
+    // Fall back to the proxy-priced set while the real market is unavailable,
+    // so the cohorts below still have something to be measured against.
+    priced.length > 0 ? priced : graded.filter((row) => row.proxyBothHalvesOdds !== null),
+  );
 
   const cohorts: CohortReport[] = [
     summarise('BTTS both halves < 8.00', priced.filter((row) => under(row, 8))),
@@ -229,6 +250,28 @@ export async function buildHayalReport(): Promise<HayalReport> {
       priced.filter((row) => under(row, 8) && ht22Under(row, 38)),
     ),
   ];
+
+  /**
+   * The proxy, reported beside the real thing rather than mixed into it.
+   *
+   * Its cohort is drawn from every fixture where both halves were priced, which
+   * is a different — and today much larger — set than the one the real market
+   * covers. Kept separate so that when both exist over the same fixtures, the
+   * question "does multiplying the halves say the same thing" has an answer.
+   */
+  const withProxy = graded.filter((row) => row.proxyBothHalvesOdds !== null);
+  const proxyUnder = (row: (typeof graded)[number], limit: number) =>
+    row.proxyBothHalvesOdds !== null && Number(row.proxyBothHalvesOdds) < limit;
+
+  if (withProxy.length > 0) {
+    cohorts.push(
+      summarise('proxy (half x half) < 8.00', withProxy.filter((row) => proxyUnder(row, 8))),
+      summarise(
+        'proxy < 8.00 + HT 2-2 < 38.00',
+        withProxy.filter((row) => proxyUnder(row, 8) && ht22Under(row, 38)),
+      ),
+    );
+  }
 
   const lift: HayalReport['lift'] = {};
   for (const cohort of cohorts) {
@@ -241,10 +284,19 @@ export async function buildHayalReport(): Promise<HayalReport> {
     lift[cohort.label] = entry;
   }
 
+  // Counted as distinct fixtures, for the same reason the cohorts are.
   const [totalSignals, candidates, premium] = await Promise.all([
-    prisma.hayalSignal.count(),
-    prisma.hayalSignal.count({ where: { bttsUnderThreshold: true } }),
-    prisma.hayalSignal.count({ where: { premium: true } }),
+    prisma.hayalSignal.findMany({ distinct: ['matchId'], select: { matchId: true } }),
+    prisma.hayalSignal.findMany({
+      where: { bttsUnderThreshold: true },
+      distinct: ['matchId'],
+      select: { matchId: true },
+    }),
+    prisma.hayalSignal.findMany({
+      where: { premium: true },
+      distinct: ['matchId'],
+      select: { matchId: true },
+    }),
   ]);
 
   return {
@@ -253,7 +305,12 @@ export async function buildHayalReport(): Promise<HayalReport> {
     cohorts,
     lift,
     coupons: await buildCouponReport(),
-    totals: { signals: totalSignals, graded: graded.length, candidates, premium },
+    totals: {
+      signals: totalSignals.length,
+      graded: graded.length,
+      candidates: candidates.length,
+      premium: premium.length,
+    },
   };
 }
 

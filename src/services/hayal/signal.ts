@@ -31,20 +31,40 @@ export const HAYAL_DEFAULTS = {
 export interface HayalThresholds {
   bttsThreshold: number;
   ht22Threshold: number;
+  /**
+   * Whether the two halves multiplied together may stand in for the combined
+   * market when no provider prices it.
+   *
+   * Off. The product is not the same bet — the halves are positively
+   * correlated, so it understates the chance and quotes a longer price, and a
+   * "below 8.00" test on it is stricter than the claim. The proxy is recorded
+   * on every fixture either way, so turning this on later starts a test that
+   * can still be told apart from the real one, row by row.
+   */
+  allowProxySignal: boolean;
 }
 
 export async function loadHayalThresholds(): Promise<HayalThresholds> {
-  const [bttsThreshold, ht22Threshold] = await Promise.all([
+  const [bttsThreshold, ht22Threshold, allowProxySignal] = await Promise.all([
     getAppSetting<number>('hayal.bttsThreshold', HAYAL_DEFAULTS.bttsThreshold),
     getAppSetting<number>('hayal.ht22Threshold', HAYAL_DEFAULTS.ht22Threshold),
+    getAppSetting<boolean>('hayal.allowProxySignal', false),
   ]);
-  return { bttsThreshold, ht22Threshold };
+  return { bttsThreshold, ht22Threshold, allowProxySignal };
 }
+
+export type HayalSignalSourceKey = 'NONE' | 'MARKET' | 'PROXY';
 
 export interface HayalVerdict {
   matchId: string;
   bttsBothHalvesOdds: number | null;
   halfTime22Odds: number | null;
+  /** The halves priced separately, and their product. Recorded, not trusted. */
+  bttsFirstHalfOdds: number | null;
+  bttsSecondHalfOdds: number | null;
+  proxyBothHalvesOdds: number | null;
+  /** Which price the verdict below was actually taken from. */
+  signalSource: HayalSignalSourceKey;
   bttsUnderThreshold: boolean;
   ht22UnderThreshold: boolean;
   /** Both conditions together. */
@@ -67,12 +87,35 @@ export function judge(
     matchId: string;
     bttsBothHalvesOdds: number | null;
     halfTime22Odds: number | null;
+    bttsFirstHalfOdds: number | null;
+    bttsSecondHalfOdds: number | null;
     oddsCapturedAt: Date | null;
   },
   thresholds: HayalThresholds,
 ): HayalVerdict {
+  /**
+   * Both halves multiplied. Recorded on every fixture that has both prices,
+   * whether or not it is allowed to decide anything.
+   */
+  const proxyBothHalvesOdds =
+    input.bttsFirstHalfOdds !== null && input.bttsSecondHalfOdds !== null
+      ? input.bttsFirstHalfOdds * input.bttsSecondHalfOdds
+      : null;
+
+  /**
+   * The real market first, always. The proxy is consulted only when the real
+   * price is absent *and* it has been explicitly allowed — never as a
+   * tie-breaker, and never silently.
+   */
+  const signalOdds =
+    input.bttsBothHalvesOdds !== null
+      ? { price: input.bttsBothHalvesOdds, source: 'MARKET' as const }
+      : thresholds.allowProxySignal && proxyBothHalvesOdds !== null
+        ? { price: proxyBothHalvesOdds, source: 'PROXY' as const }
+        : null;
+
   const bttsUnderThreshold =
-    input.bttsBothHalvesOdds !== null && input.bttsBothHalvesOdds < thresholds.bttsThreshold;
+    signalOdds !== null && signalOdds.price < thresholds.bttsThreshold;
   const ht22UnderThreshold =
     input.halfTime22Odds !== null && input.halfTime22Odds < thresholds.ht22Threshold;
 
@@ -80,6 +123,10 @@ export function judge(
     matchId: input.matchId,
     bttsBothHalvesOdds: input.bttsBothHalvesOdds,
     halfTime22Odds: input.halfTime22Odds,
+    bttsFirstHalfOdds: input.bttsFirstHalfOdds,
+    bttsSecondHalfOdds: input.bttsSecondHalfOdds,
+    proxyBothHalvesOdds,
+    signalSource: signalOdds?.source ?? 'NONE',
     bttsUnderThreshold,
     ht22UnderThreshold,
     // Rule 3: the strongest candidate needs both. Rule 1 alone is enough to be
@@ -110,7 +157,15 @@ async function shortestPrices(
       capturedAt: { lte: asOf },
       available: true,
       market: {
-        code: { in: [MARKET.BTTS_BOTH_HALVES, MARKET.HALF_TIME_CORRECT_SCORE] },
+        code: {
+          in: [
+            MARKET.BTTS_BOTH_HALVES,
+            MARKET.HALF_TIME_CORRECT_SCORE,
+            // Fetched for the record, not for the verdict. See `judge`.
+            MARKET.BTTS_FIRST_HALF,
+            MARKET.BTTS_SECOND_HALF,
+          ],
+        },
       },
     },
     select: {
@@ -138,10 +193,14 @@ async function shortestPrices(
 
 export interface SignalRunResult {
   fixturesConsidered: number;
-  /** Fixtures the bulletin priced the signal market for. */
+  /** Fixtures the bulletin priced the real signal market for. */
   fixturesWithSignalMarket: number;
+  /** Fixtures where both halves were priced, so the proxy could be recorded. */
+  fixturesWithProxyMarket: number;
   candidates: number;
   premium: number;
+  /** Of the candidates, how many were judged on the proxy rather than the market. */
+  candidatesFromProxy: number;
   signalsWritten: number;
   thresholds: HayalThresholds;
 }
@@ -173,8 +232,10 @@ export async function detectHayalSignals(options: {
   const result: SignalRunResult = {
     fixturesConsidered: matches.length,
     fixturesWithSignalMarket: 0,
+    fixturesWithProxyMarket: 0,
     candidates: 0,
     premium: 0,
+    candidatesFromProxy: 0,
     signalsWritten: 0,
     thresholds,
   };
@@ -186,26 +247,71 @@ export async function detectHayalSignals(options: {
   );
   const ht22Code = halfTimeCorrectScoreCode(2, 2);
 
+  /**
+   * What was last recorded for each fixture.
+   *
+   * The job ticks every half hour, and writing a row each time would put fifty
+   * identical rows a day behind one fixture — which is not an audit trail, and
+   * worse, the hit-rate report counts rows: one fixture would have carried the
+   * weight of fifty. A row is written when the verdict or a price it rests on
+   * actually moves.
+   */
+  const previous = await prisma.hayalSignal.findMany({
+    where: { matchId: { in: matches.map((m) => m.id) } },
+    orderBy: { signalCapturedAt: 'desc' },
+    select: {
+      matchId: true,
+      bttsBothHalvesOdds: true,
+      halfTime22Odds: true,
+      proxyBothHalvesOdds: true,
+      bttsUnderThreshold: true,
+      ht22UnderThreshold: true,
+      signalCapturedAt: true,
+    },
+  });
+  const latestByMatch = new Map<string, (typeof previous)[number]>();
+  for (const row of previous) if (!latestByMatch.has(row.matchId)) latestByMatch.set(row.matchId, row);
+
+  const same = (stored: Prisma.Decimal | null, fresh: number | null) =>
+    stored === null ? fresh === null : fresh !== null && Number(stored) === Number(fresh.toFixed(3));
+
   const rows: Prisma.HayalSignalCreateManyInput[] = [];
   for (const match of matches) {
     const forMatch = prices.get(match.id);
     const btts = forMatch?.get('BTTS_BOTH_HALVES_YES') ?? null;
     const ht22 = forMatch?.get(ht22Code) ?? null;
+    const firstHalf = forMatch?.get('BTTS_H1_YES') ?? null;
+    const secondHalf = forMatch?.get('BTTS_H2_YES') ?? null;
 
     if (btts) result.fixturesWithSignalMarket++;
+    if (firstHalf && secondHalf) result.fixturesWithProxyMarket++;
 
     const verdict = judge(
       {
         matchId: match.id,
         bttsBothHalvesOdds: btts?.price ?? null,
         halfTime22Odds: ht22?.price ?? null,
-        oddsCapturedAt: btts?.capturedAt ?? ht22?.capturedAt ?? null,
+        bttsFirstHalfOdds: firstHalf?.price ?? null,
+        bttsSecondHalfOdds: secondHalf?.price ?? null,
+        oddsCapturedAt:
+          btts?.capturedAt ?? ht22?.capturedAt ?? firstHalf?.capturedAt ?? null,
       },
       thresholds,
     );
 
     if (verdict.qualifies) result.candidates++;
     if (verdict.premium) result.premium++;
+    if (verdict.qualifies && verdict.signalSource === 'PROXY') result.candidatesFromProxy++;
+
+    const last = latestByMatch.get(match.id);
+    const unchanged =
+      last !== undefined &&
+      last.bttsUnderThreshold === verdict.bttsUnderThreshold &&
+      last.ht22UnderThreshold === verdict.ht22UnderThreshold &&
+      same(last.bttsBothHalvesOdds, verdict.bttsBothHalvesOdds) &&
+      same(last.halfTime22Odds, verdict.halfTime22Odds) &&
+      same(last.proxyBothHalvesOdds, verdict.proxyBothHalvesOdds);
+    if (unchanged) continue;
 
     rows.push({
       matchId: match.id,
@@ -217,6 +323,19 @@ export async function detectHayalSignals(options: {
         verdict.halfTime22Odds === null
           ? null
           : new Prisma.Decimal(verdict.halfTime22Odds.toFixed(3)),
+      bttsFirstHalfOdds:
+        verdict.bttsFirstHalfOdds === null
+          ? null
+          : new Prisma.Decimal(verdict.bttsFirstHalfOdds.toFixed(3)),
+      bttsSecondHalfOdds:
+        verdict.bttsSecondHalfOdds === null
+          ? null
+          : new Prisma.Decimal(verdict.bttsSecondHalfOdds.toFixed(3)),
+      proxyBothHalvesOdds:
+        verdict.proxyBothHalvesOdds === null
+          ? null
+          : new Prisma.Decimal(verdict.proxyBothHalvesOdds.toFixed(3)),
+      signalSource: verdict.signalSource,
       bttsUnderThreshold: verdict.bttsUnderThreshold,
       ht22UnderThreshold: verdict.ht22UnderThreshold,
       bttsThreshold: new Prisma.Decimal(thresholds.bttsThreshold.toFixed(3)),
