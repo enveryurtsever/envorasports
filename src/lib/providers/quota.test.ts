@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { interpretApiFootballBody } from './api-football/envelope';
-import { probeIsDue, type QuotaSnapshot } from './quota-manager';
-import { windowBounds } from './quota';
+import { probeIsDue } from './quota-manager';
 
 /**
  * These two behaviours are what let a 100/day budget spend 391 requests.
@@ -53,24 +52,6 @@ describe('interpretApiFootballBody', () => {
     expect(interpretApiFootballBody('nonsense').ok).toBe(true);
   });
 });
-
-function snapshot(overrides: Partial<QuotaSnapshot> = {}): QuotaSnapshot {
-  const now = new Date('2026-09-06T04:00:00Z');
-  return {
-    provider: 'api-football',
-    window: 'day',
-    budget: 100,
-    used: 100,
-    remaining: 0,
-    windowStart: windowBounds('day', now).start,
-    windowEnd: windowBounds('day', now).end,
-    exhausted: true,
-    exhaustedAt: now,
-    resetAt: windowBounds('day', now).end,
-    endpointUsage: {},
-    ...overrides,
-  };
-}
 
 describe('probeIsDue', () => {
   const spentAt = new Date('2026-09-06T04:00:00Z');
