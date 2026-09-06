@@ -128,21 +128,36 @@ export async function syncHayalOdds(
     },
   });
 
-  // A fixture already carrying a recent half-time price is not worth four more
-  // credits; the signal is a price level, not a tick-by-tick series.
-  const recent = await prisma.odds.groupBy({
-    by: ['matchId'],
-    where: {
-      matchId: { in: candidates.map((m) => m.id) },
-      source: THE_ODDS_API,
-      market: { code: { in: ['HALF_TIME_CORRECT_SCORE', 'BTTS_FIRST_HALF', 'BTTS_SECOND_HALF'] } },
-      capturedAt: { gte: new Date(now.getTime() - refreshAfterHours * 3600 * 1000) },
-    },
-    _max: { capturedAt: true },
-  });
-  const priced = new Set(recent.map((row) => row.matchId));
+  const since = new Date(now.getTime() - refreshAfterHours * 3600 * 1000);
 
-  const eligible = candidates.filter((match) => !priced.has(match.id));
+  /**
+   * Skip a fixture we have already *asked* about, not just one we got a price
+   * for.
+   *
+   * Coverage of these markets is thin: roughly half the fixtures come back with
+   * nothing. Keying the skip on stored prices left every uncovered fixture
+   * permanently eligible, so each run re-asked the same twenty events — free
+   * when they stay empty, and not free the moment one is priced. The request
+   * log already records what was asked and when, and the event id is in the
+   * path, so it is the honest record of an attempt.
+   */
+  const attempts = await prisma.providerRequestLog.findMany({
+    where: {
+      provider: THE_ODDS_API,
+      endpoint: { contains: '/events/' },
+      createdAt: { gte: since },
+    },
+    select: { endpoint: true },
+  });
+  const attempted = new Set(
+    attempts
+      .map((row) => /\/events\/([^/]+)\/odds/.exec(row.endpoint)?.[1])
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  const eligible = candidates.filter(
+    (match) => match.oddsEventExternalId !== null && !attempted.has(match.oddsEventExternalId),
+  );
   result.fixturesEligible = eligible.length;
 
   const policy = oddsQuotaPolicy();
@@ -153,13 +168,17 @@ export async function syncHayalOdds(
   // One fixture must be affordable even in the worst case before starting.
   const budget = spendable < MAX_CREDITS_PER_FIXTURE ? 0 : Math.min(maxFixtures, eligible.length);
 
+  // Three different reasons for doing nothing, and they need different fixes:
+  // out of budget, held back by the reserve, or simply nothing left to ask.
   result.creditBudget = spendable;
   result.budgetReason = openingQuota.exhausted
     ? 'odds api budget exhausted'
-    : budget === 0
-      ? `remaining ${openingQuota.remaining} is inside the ${reserve}-credit reserve`
-      : `${budget} of ${eligible.length} eligible fixtures, ${spendable} credits spendable ` +
-        `(<= ${MAX_CREDITS_PER_FIXTURE} each, usually 0 — an unpriced event is not charged)`;
+    : eligible.length === 0
+      ? `every fixture in the window was already asked within ${refreshAfterHours}h`
+      : spendable < MAX_CREDITS_PER_FIXTURE
+        ? `remaining ${openingQuota.remaining} is inside the ${reserve}-credit reserve`
+        : `${budget} of ${eligible.length} eligible fixtures, ${spendable} credits spendable ` +
+          `(<= ${MAX_CREDITS_PER_FIXTURE} each, usually 0 — an unpriced event is not charged)`;
 
   if (budget === 0) {
     log.info('no hayal odds fetched', { ...result });
