@@ -296,7 +296,14 @@ export function createApiFootballOddsProvider(config: {
   apiKey: string;
   baseUrl: string;
   quota: QuotaPolicy;
-  /** Restrict to one bookmaker; fewer, more consistent prices per request. */
+  /**
+   * Restrict to one bookmaker, or 0 for all of them.
+   *
+   * All of them costs the same single request and returns six books instead of
+   * one, which is a better market price to calibrate against: removing the
+   * overround from a consensus is more honest than removing it from whichever
+   * book happened to be picked.
+   */
   bookmakerId?: number;
 }): OddsProvider {
   const http = new HttpClient({
@@ -312,7 +319,7 @@ export function createApiFootballOddsProvider(config: {
 
   async function fetchFixture(fixtureId: string, capturedAt: Date): Promise<ProviderOddsEvent | null> {
     const query: Record<string, string> = { fixture: fixtureId };
-    if (config.bookmakerId !== undefined) query.bookmaker = String(config.bookmakerId);
+    if (config.bookmakerId) query.bookmaker = String(config.bookmakerId);
 
     const envelope = await http.get<ApiFootballEnvelope<RawOddsEntry[]>>({
       path: '/odds',
@@ -362,6 +369,53 @@ export function createApiFootballOddsProvider(config: {
 
   return {
     name: API_FOOTBALL_ODDS,
+
+    /**
+     * One league's fixtures on one date.
+     *
+     * Cheaper again than asking for the whole date: a Sunday is 55 pages of ten
+     * across every competition on earth, while a single league's four fixtures
+     * are one page. Fourteen league-days cover a bulletin for about as many
+     * requests as twenty fixtures cost individually.
+     */
+    async getBulletinByLeagueDate(
+      leagueId: string,
+      season: string,
+      date: string,
+      maxRequests: number,
+    ): Promise<ProviderBulletin> {
+      const capturedAt = new Date();
+      const events: ProviderOddsEvent[] = [];
+      let page = 1;
+      let totalPages = 1;
+      let used = 0;
+
+      try {
+        while (page <= totalPages && used < maxRequests) {
+          const query: Record<string, string> = {
+            league: leagueId,
+            season,
+            date,
+            page: String(page),
+          };
+          if (config.bookmakerId) query.bookmaker = String(config.bookmakerId);
+
+          const envelope = await http.get<ApiFootballEnvelope<RawOddsEntry[]>>({
+            path: '/odds',
+            query,
+            cost: 1,
+          });
+          used++;
+          totalPages = envelope.paging?.total ?? 1;
+          for (const entry of envelope.response ?? []) events.push(mapEntry(entry, capturedAt));
+          page++;
+        }
+      } catch (error) {
+        log.warn('league odds fetch failed', { leagueId, date, error: String(error) });
+      }
+
+      return { capturedAt, events, quotaRemaining: http.reportedQuotaRemaining };
+    },
 
     /** A whole date in pages of ten, for when most of a bulletin is wanted. */
     async getBulletinByDate(date: string, maxRequests: number): Promise<ProviderBulletin> {

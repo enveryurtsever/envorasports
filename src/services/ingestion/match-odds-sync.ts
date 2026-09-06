@@ -45,7 +45,13 @@ export async function syncMatchOddsForWindow(
       league: { active: true },
     },
     orderBy: { scheduledKickoffUtc: 'asc' },
-    select: { id: true, externalId: true, scheduledKickoffUtc: true },
+    select: {
+      id: true,
+      externalId: true,
+      scheduledKickoffUtc: true,
+      // The provider's league id lives in the season key, as "203-2026".
+      season: { select: { externalId: true } },
+    },
   });
 
   const result: MatchOddsSyncResult = {
@@ -64,9 +70,17 @@ export async function syncMatchOddsForWindow(
 
   const provider = getMatchOddsProvider();
 
-  // Bulk pages a whole date, so the request cap no longer limits how many
-  // fixtures can be priced — every candidate in the window is fair game.
-  const bulkAvailable = provider.getBulletinByDate !== undefined && candidates.length >= 12;
+  /**
+   * Which shape is cheaper depends on how much of the day we want.
+   *
+   * A date is 56 pages of ten — every competition the provider carries — so it
+   * only wins when we want more fixtures than that costs. For a bulletin of
+   * fifty it does not: fifty individual requests price exactly the fifty we
+   * care about, where the same spend on pages returns five hundred we do not.
+   * The cap was the real constraint all along, not the request shape.
+   */
+  const DATE_PAGE_COST = 56;
+  const bulkAvailable = provider.getBulletinByDate !== undefined && candidates.length > DATE_PAGE_COST;
   const requested = bulkAvailable ? candidates : candidates.slice(0, maxFixtures);
   result.fixturesRequested = requested.length;
 
@@ -81,17 +95,35 @@ export async function syncMatchOddsForWindow(
    * Below the threshold the per-fixture path is still cheaper, because it asks
    * only for what it needs.
    */
-  const dates = [...new Set(requested.map((m) => m.scheduledKickoffUtc.toISOString().slice(0, 10)))];
-  const useDateBulk = bulkAvailable;
+  /**
+   * Group the work by league and date.
+   *
+   * The cheapest shape when it is available — one league's four fixtures on a
+   * date is a single page. It is not available on the free plan: `league`
+   * requires `season`, and the current season is refused ("try from 2022 to
+   * 2024"), so this path waits for a plan that allows it.
+   */
+  const groups = new Map<string, { leagueId: string; season: string; date: string }>();
+  for (const match of requested) {
+    const [leagueId, season] = (match.season?.externalId ?? '').split('-');
+    if (!leagueId || !season) continue;
+
+    const date = match.scheduledKickoffUtc.toISOString().slice(0, 10);
+    groups.set(`${leagueId}:${season}:${date}`, { leagueId, season, date });
+  }
 
   let bulletin;
-  if (useDateBulk) {
-    const perDate = Math.max(1, Math.floor(maxFixtures / dates.length));
+  if (bulkAvailable && provider.getBulletinByLeagueDate && groups.size > 0) {
     const events = [];
     let quotaRemaining: number | null = null;
-
-    for (const date of dates) {
-      const page = await provider.getBulletinByDate!(date, perDate);
+    // Two pages each: a league rarely plays more than twenty fixtures a day.
+    for (const group of groups.values()) {
+      const page = await provider.getBulletinByLeagueDate(
+        group.leagueId,
+        group.season,
+        group.date,
+        2,
+      );
       events.push(...page.events);
       quotaRemaining = page.quotaRemaining;
     }

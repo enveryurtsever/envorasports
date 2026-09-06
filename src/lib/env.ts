@@ -28,8 +28,12 @@ const serverSchema = z.object({
    * It is never allowed to produce a probability, a price or a reason (§48).
    */
   NARRATION_PROVIDER: z.enum(['gemini', 'none']).default('none'),
-  /** Bet365 (8) prices the widest set of markets on the free plan. */
-  FOOTBALL_ODDS_BOOKMAKER_ID: z.coerce.number().int().positive().default(8),
+  /**
+   * 0 takes every bookmaker the provider returns — same request cost, six books
+   * instead of one, and a consensus price to calibrate against. Set a specific
+   * id to pin a single book.
+   */
+  FOOTBALL_ODDS_BOOKMAKER_ID: z.coerce.number().int().min(0).default(0),
   GEMINI_API_KEY: z.string().default(''),
   GEMINI_MODEL: z.string().default('gemini-3.6-flash'),
   /**

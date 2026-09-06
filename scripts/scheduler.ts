@@ -55,7 +55,7 @@ function log(message: string, detail?: unknown): void {
  * publication day. The job itself is keyed on the publication date, so a second
  * attempt the same day is skipped rather than duplicated.
  */
-async function publicationIsDue(): Promise<boolean> {
+async function scheduledPublicationDue(): Promise<boolean> {
   const schedule = await getBulletinSchedule();
   if (!schedule.enabled) return false;
 
@@ -65,12 +65,55 @@ async function publicationIsDue(): Promise<boolean> {
   return publicationRunAt(today, schedule).getTime() <= Date.now();
 }
 
+async function publicationIsDue(): Promise<boolean> {
+  const schedule = await getBulletinSchedule();
+  if (!schedule.enabled) return false;
+
+  return (await scheduledPublicationDue()) || uncoveredFixturesExist();
+}
+
+/**
+ * True when fixtures are waiting that no coupon covers.
+ *
+ * The bulletin is not a weekly event in practice: a day's matches finish and
+ * the next day's arrive, and waiting for the next publication day leaves the
+ * site showing yesterday's slate. The publication job is keyed on its date and
+ * takes a lock, so asking it to run when there is new work is safe — it becomes
+ * a no-op when there is nothing to do.
+ */
+async function uncoveredFixturesExist(): Promise<boolean> {
+  const upcoming = await prisma.match.findMany({
+    where: { status: 'SCHEDULED', scheduledKickoffUtc: { gt: new Date() } },
+    select: { scheduledKickoffUtc: true },
+    take: 200,
+  });
+  if (upcoming.length === 0) return false;
+
+  const covered = await prisma.couponSelection.findFirst({
+    where: { match: { status: 'SCHEDULED', scheduledKickoffUtc: { gt: new Date() } } },
+    select: { id: true },
+  });
+
+  // Nothing upcoming is on a coupon: either the slate has all been played out
+  // or new fixtures have arrived since it was built.
+  return covered === null;
+}
+
 const JOBS: ScheduledJob[] = [
   {
     name: 'bulletin-publication',
     everyMs: 10 * MINUTE,
     when: publicationIsDue,
-    run: () => runBulletinPublication(),
+    /**
+     * The scheduled run is keyed on its publication date and skips once done.
+     * A run triggered by new fixtures has to force, or the day's key stops it —
+     * and forcing is safe: generation replaces its own pending coupons and
+     * leaves settled ones alone.
+     */
+    run: async () =>
+      (await scheduledPublicationDue())
+        ? runBulletinPublication()
+        : runBulletinPublication({ force: true }),
   },
   {
     // Fills window days the provider's plan could not serve earlier.

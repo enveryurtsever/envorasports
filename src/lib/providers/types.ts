@@ -235,6 +235,17 @@ export interface OddsProvider {
    * addressed only by competition has nothing to implement.
    */
   getBulletinByDate?(date: string, maxRequests: number): Promise<ProviderBulletin>;
+  /**
+   * One competition's fixtures on one date — the cheapest shape of all when the
+   * competitions being tracked are a small slice of everything the provider
+   * prices.
+   */
+  getBulletinByLeagueDate?(
+    leagueId: string,
+    season: string,
+    date: string,
+    maxRequests: number,
+  ): Promise<ProviderBulletin>;
 }
 
 /** Thrown when a provider cannot answer; never crashes the pipeline (§43). */

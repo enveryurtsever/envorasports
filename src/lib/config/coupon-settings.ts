@@ -270,7 +270,12 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     category: 'HIGH_CONFIDENCE',
     enabled: true,
     couponCount: 3,
-    minTotalOdds: 2,
+    /**
+     * A Banko is certainty, and certainty is cheap: 75% prices at about 1.33,
+     * so the odds floor follows the probability rather than fighting it. The
+     * two cannot both be raised — 2.00 is a 50% shot by definition.
+     */
+    minTotalOdds: 1.3,
     maxTotalOdds: 4,
     minSelections: 2,
     maxSelections: 3,
@@ -291,7 +296,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
      * once the bulletin carries short-priced favourites (Over 0.5, double
      * chance on a heavy favourite); until then it would empty the category.
      */
-    minCombinedProbability: 0.4,
+    minCombinedProbability: 0.75,
     oneSelectionPerMatch: true,
     /**
      * The safe end of the bulletin, in markets a reader already knows. 6+ goals
