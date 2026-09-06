@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db/prisma';
 import { runJob, runKeyFor, type JobOutcome } from '@/lib/jobs/runner';
 import { getBulletinSchedule } from '@/lib/config/settings-service';
 import { DEFAULT_FOCUS_GROUPS } from '@/lib/config/coupon-settings';
+import { dateKeyToUtcMidnight } from '@/lib/time/zoned';
 import {
   coverageWindow,
   decideRun,
@@ -20,6 +21,9 @@ import { rebuildEloRatings } from '../features/elo';
 import { runPredictions } from '../predictions/prediction-engine';
 import { generateCoupons } from '../coupons/coupon-generator';
 import { narrateWindow } from '../narration/narration-job';
+import { detectHayalSignals } from '../hayal/signal';
+import { generateHayalCoupons } from '../hayal/coupon-builder';
+import { gradeHayalSignals } from '../hayal/stats';
 import {
   captureSettingsSnapshot,
   getCategorySettings,
@@ -45,7 +49,8 @@ export type JobName =
   | 'narrate-analyses'
   | 'result-sync'
   | 'settlement'
-  | 'historical-import';
+  | 'historical-import'
+  | 'hayal';
 
 export interface JobRequest {
   /**
@@ -334,6 +339,93 @@ export async function runSettlementSweep(): Promise<JobOutcome> {
   });
 }
 
+/**
+ * The HAYAL cycle: evaluate the rule, build its slates, grade what finished.
+ *
+ * A separate job on purpose. HAYAL is a claim under test, not a model output,
+ * and folding it into the publication would tie its record to whether the main
+ * pipeline ran that day. It also spends no provider quota: it reads prices the
+ * odds sync already stored.
+ */
+export async function runHayal(): Promise<JobOutcome> {
+  const schedule = await getBulletinSchedule();
+  const today = todayInSchedule(schedule);
+  const activePublication =
+    publicationCovering(today, schedule) ?? nextPublicationDate(today, schedule, { inclusive: true });
+  const window = coverageWindow(activePublication, schedule);
+
+  return runJob({
+    jobName: 'hayal',
+    lockKey: 'hayal',
+    lockTtlMs: 10 * 60 * 1000,
+    handler: async ({ logger, heartbeat }) => {
+      const signals = await detectHayalSignals({
+        from: window.startUtc,
+        to: window.endUtc,
+      });
+      await heartbeat();
+
+      // Grading first would miss today's finishes; grading last catches them.
+      const graded = await gradeHayalSignals();
+      await heartbeat();
+
+      const modelVersion = await prisma.modelVersion.findFirst({ where: { active: true } });
+      if (!modelVersion) throw new Error('No active model version');
+
+      const snapshot = await captureSettingsSnapshot();
+      // The column is a date, not the "2026-09-03" key the schedule speaks in.
+      const publicationDate = dateKeyToUtcMidnight(activePublication);
+      const run = await prisma.couponGenerationRun.upsert({
+        where: {
+          publicationDate_modelVersionId: {
+            publicationDate,
+            modelVersionId: modelVersion.id,
+          },
+        },
+        update: {},
+        create: {
+          publicationDate,
+          coverageStartDate: dateKeyToUtcMidnight(window.startDate),
+          coverageEndDate: dateKeyToUtcMidnight(window.endDate),
+          scheduleTimezone: schedule.timezone,
+          grouping: schedule.grouping,
+          modelVersionId: modelVersion.id,
+          settingsSnapshotId: snapshot.id,
+          status: 'RUNNING',
+          startedAt: new Date(),
+        },
+        select: { id: true },
+      });
+
+      // Replace this run's pending HAYAL coupons; settled ones are the record.
+      await prisma.coupon.deleteMany({
+        where: { category: 'HAYAL', resultStatus: 'PENDING' },
+      });
+
+      const coupons = await generateHayalCoupons({
+        window,
+        timezone: schedule.timezone,
+        modelVersionId: modelVersion.id,
+        settingsSnapshotId: snapshot.id,
+        generationRunId: run.id,
+      });
+
+      logger.info('hayal cycle complete', {
+        candidates: signals.candidates,
+        premium: signals.premium,
+        coupons: coupons.couponsGenerated,
+        graded: graded.signalsGraded,
+      });
+
+      return {
+        itemsProcessed: coupons.couponsGenerated,
+        itemsFailed: 0,
+        metadata: { signals, coupons, graded },
+      };
+    },
+  });
+}
+
 /** Bulk history import. Unmetered, so it may run for a long time. */
 export async function runHistoricalImport(request: JobRequest = {}): Promise<JobOutcome> {
   const divisions = request.divisions ?? [];
@@ -406,6 +498,8 @@ export async function runNamedJob(name: JobName, request: JobRequest = {}): Prom
       return runSettlementSweep();
     case 'historical-import':
       return runHistoricalImport(request);
+    case 'hayal':
+      return runHayal();
   }
 }
 
@@ -418,6 +512,7 @@ export const JOB_NAMES: JobName[] = [
   'result-sync',
   'settlement',
   'historical-import',
+  'hayal',
 ];
 
 /** Operational snapshot for the admin monitor (§39). */

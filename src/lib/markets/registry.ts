@@ -32,6 +32,17 @@ export const MARKET = {
   TEAM_TOTAL: 'TEAM_TOTAL',
   CORNERS: 'CORNERS',
   CARDS: 'CARDS',
+  /**
+   * Markets the HAYAL signal is stated in.
+   *
+   * The claim being tested is expressed in the prices of three bets the system
+   * did not carry: both teams scoring in *each* half, the half-time score being
+   * 2-2, and the half-time goal lines. `BTTS` here is whole-match and
+   * `HALF_TIME_FULL_TIME` is the 1X2 pair, so neither could stand in for them.
+   */
+  BTTS_BOTH_HALVES: 'BTTS_BOTH_HALVES',
+  HALF_TIME_CORRECT_SCORE: 'HALF_TIME_CORRECT_SCORE',
+  HALF_TIME_OVER_UNDER: 'HALF_TIME_OVER_UNDER',
 } as const;
 
 export type MarketCode = (typeof MARKET)[keyof typeof MARKET];
@@ -91,6 +102,16 @@ export function teamTotalCode(side: 'HOME' | 'AWAY', direction: 'OVER' | 'UNDER'
   return `TEAM_${side}_${direction}_${lineToCode(line)}`;
 }
 
+/** Half-time score, e.g. HT_CS_2_2 — the second leg of the HAYAL signal. */
+export function halfTimeCorrectScoreCode(home: number, away: number): string {
+  return `HT_CS_${home}_${away}`;
+}
+
+/** Half-time goal line, e.g. HT_OVER_1_5. */
+export function halfTimeOverUnderCode(side: 'OVER' | 'UNDER', line: number): string {
+  return `HT_${side}_${lineToCode(line)}`;
+}
+
 // --- lines we seed ---------------------------------------------------------
 
 export const GOAL_LINES = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5] as const;
@@ -105,6 +126,10 @@ export const TEAM_GOAL_LINES = [0.5, 1.5, 2.5] as const;
  */
 export const GOALS_PLUS_THRESHOLDS = [6] as const;
 export const ASIAN_HANDICAP_LINES = [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2] as const;
+/** Half-time goal lines. The HAYAL claim is about 1.5 and 2.5 specifically. */
+export const HALF_TIME_GOAL_LINES = [0.5, 1.5, 2.5, 3.5] as const;
+/** Half-time scores worth carrying. 2-2 is what the HAYAL signal reads. */
+export const HALF_TIME_CORRECT_SCORE_MAX = 3;
 
 /** A whole-line handicap refunds the stake when the margin lands exactly on it. */
 export function handicapPushes(handicap: number): boolean {
@@ -284,6 +309,64 @@ export const MARKET_DEFINITIONS: MarketDefinition[] = [
         parameters: { home, away },
       })),
     ).flat(),
+  },
+  {
+    /**
+     * Both teams scoring in the first half *and* in the second half.
+     *
+     * This is the price the HAYAL signal reads. It is not whole-match BTTS and
+     * it is not HT/FT: it requires four goals at minimum, split across both
+     * halves and both sides, which is why a short price on it is claimed to say
+     * something about the goal environment.
+     */
+    code: MARKET.BTTS_BOTH_HALVES,
+    name: 'Both Teams to Score in Both Halves',
+    category: 'BOTH_TEAMS',
+    description: 'Both sides score before half time and again after it.',
+    selections: [
+      {
+        code: 'BTTS_BOTH_HALVES_YES',
+        name: 'Yes',
+        labelKey: 'selections.BTTS_BOTH_HALVES_YES',
+        parameters: { value: true },
+      },
+      {
+        code: 'BTTS_BOTH_HALVES_NO',
+        name: 'No',
+        labelKey: 'selections.BTTS_BOTH_HALVES_NO',
+        parameters: { value: false },
+      },
+    ],
+  },
+  {
+    code: MARKET.HALF_TIME_CORRECT_SCORE,
+    name: 'Half-Time Correct Score',
+    category: 'SCORE',
+    description: 'Exact score at half time; 2-2 is the second HAYAL signal.',
+    selections: Array.from({ length: HALF_TIME_CORRECT_SCORE_MAX + 1 }, (_, home) =>
+      Array.from({ length: HALF_TIME_CORRECT_SCORE_MAX + 1 }, (_, away) => ({
+        code: halfTimeCorrectScoreCode(home, away),
+        name: `HT ${home}-${away}`,
+        labelKey: 'selections.HT_CORRECT_SCORE',
+        labelValues: { home, away },
+        parameters: { home, away },
+      })),
+    ).flat(),
+  },
+  {
+    code: MARKET.HALF_TIME_OVER_UNDER,
+    name: 'Half-Time Over / Under',
+    category: 'HALVES',
+    description: 'Goals scored before half time.',
+    selections: HALF_TIME_GOAL_LINES.flatMap((line) =>
+      (['OVER', 'UNDER'] as const).map((side) => ({
+        code: halfTimeOverUnderCode(side, line),
+        name: `HT ${side === 'OVER' ? 'Over' : 'Under'} ${line.toFixed(1)}`,
+        labelKey: side === 'OVER' ? 'selections.HT_OVER' : 'selections.HT_UNDER',
+        labelValues: { line },
+        parameters: { line, side },
+      })),
+    ),
   },
   {
     code: MARKET.ASIAN_HANDICAP,

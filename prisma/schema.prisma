@@ -77,6 +77,20 @@ enum CouponCategory {
   BALANCED_PICKS
   HIGH_VALUE
   COMBINATION_SYSTEM
+  /// Market-pattern coupons. Not a model output — see HayalSignal.
+  HAYAL
+}
+
+/// Which HAYAL slate a coupon belongs to.
+enum HayalVariant {
+  /// BTTS-both-halves under 8.00 only. Over 2.5 / 3.5.
+  HAYAL_NORMAL
+  /// The same signal, wider goal ladder; the 2-2 leg is used when present.
+  HAYAL_STRONG
+  /// Both conditions present, marketed as the premium tier.
+  HAYAL_PREMIUM
+  /// Both conditions, highest goal lines plus the half-time lines.
+  HAYAL_CRAZY
 }
 
 enum CouponKind {
@@ -363,6 +377,7 @@ model Match {
   resultSnapshots  MatchResultSnapshot[]
   couponSelections CouponSelection[]
   coverageReports  PredictionCoverage[]
+  hayalSignals     HayalSignal[]
 
   @@unique([source, externalId])
   @@index([scheduledKickoffUtc, status])
@@ -1008,6 +1023,7 @@ model Coupon {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  hayal            HayalCoupon?
   generationRun    CouponGenerationRun @relation(fields: [generationRunId], references: [id], onDelete: Cascade)
   modelVersion     ModelVersion        @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
   settingsSnapshot SettingsSnapshot    @relation(fields: [settingsSnapshotId], references: [id], onDelete: Restrict)
@@ -1194,7 +1210,7 @@ model Backtest {
   /// Elo, Form and the vig-free market price, alongside the ensemble. Without
   /// it, a blend can only be compared to itself and there is no way to tell
   /// whether a component is carrying it or dragging it.
-  perModelMetrics    Json?     @map("per_model_metrics")
+  perModelMetrics    Json?    @map("per_model_metrics")
 
   startedAt  DateTime? @map("started_at")
   finishedAt DateTime? @map("finished_at")
@@ -1555,4 +1571,90 @@ model ProviderQuotaState {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("provider_quota_states")
+}
+
+// ===========================================================================
+// HAYAL — a market-price claim, recorded so it can be graded (not a model)
+// ===========================================================================
+
+/// One evaluation of the HAYAL rule against one fixture's prices.
+///
+/// Deliberately holds no model output. The claim under test is that the price
+/// of "both teams score in both halves" says something about the goal
+/// environment, and mixing a model probability into the trigger would mean
+/// grading a different claim than the one that was made. Model probabilities
+/// are attached to the *selections* for display and for the combined-chance
+/// figure; they never decide whether a fixture qualifies.
+///
+/// Append-only: a fixture re-evaluated at a later capture gets a new row, so
+/// the record shows what was knowable at each moment.
+model HayalSignal {
+  id      String @id @default(cuid())
+  matchId String @map("match_id")
+
+  /// Decimal price of "both teams to score in both halves", or null when the
+  /// bulletin did not carry it — which is not a failed signal, it is no signal.
+  bttsBothHalvesOdds Decimal? @map("btts_both_halves_odds") @db.Decimal(12, 3)
+  /// Decimal price of the half-time score being 2-2.
+  halfTime22Odds     Decimal? @map("half_time_2_2_odds") @db.Decimal(12, 3)
+
+  /// The two conditions, stored as evaluated rather than recomputed on read:
+  /// the thresholds may be retuned later and old rows must keep their verdict.
+  bttsUnderThreshold Boolean @map("btts_under_threshold")
+  ht22UnderThreshold Boolean @map("ht22_under_threshold")
+  /// Thresholds in force when this row was written.
+  bttsThreshold      Decimal @map("btts_threshold") @db.Decimal(12, 3)
+  ht22Threshold      Decimal @map("ht22_threshold") @db.Decimal(12, 3)
+
+  /// Both conditions together — the "HAYAL PREMIUM" tier.
+  premium Boolean @default(false)
+
+  /// When the rule was evaluated, when the prices it read were captured, and
+  /// when the match starts. All three are needed to prove no result-time
+  /// information could have reached the signal.
+  signalCapturedAt DateTime  @map("signal_captured_at")
+  oddsCapturedAt   DateTime? @map("odds_captured_at")
+  matchStartTime   DateTime  @map("match_start_time")
+
+  /// Graded once the match finishes: which goal markets actually landed.
+  /// Null until then. This is what the hit-rate report reads.
+  outcomes  Json?
+  settledAt DateTime? @map("settled_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, signalCapturedAt])
+  @@index([premium, matchStartTime])
+  @@index([matchStartTime])
+  @@map("hayal_signals")
+}
+
+/// HAYAL-specific facts about a coupon, kept beside it rather than inside it.
+model HayalCoupon {
+  id       String @id @default(cuid())
+  couponId String @unique @map("coupon_id")
+
+  variant HayalVariant
+
+  /// Product of the selections' model probabilities — the chance the whole
+  /// coupon lands.
+  combinedProbability      Decimal @map("combined_probability") @db.Decimal(9, 8)
+  /// Mean of the selections' probabilities. Shown as "tutma gucu"; it is an
+  /// average leg strength and is NOT the chance the coupon comes in.
+  averageSelectionStrength Decimal @map("average_selection_strength") @db.Decimal(9, 8)
+
+  /// The signals the coupon was built from, frozen at build time.
+  signals Json
+
+  signalCapturedAt DateTime  @map("signal_captured_at")
+  oddsCapturedAt   DateTime? @map("odds_captured_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
+
+  @@index([variant])
+  @@map("hayal_coupons")
 }

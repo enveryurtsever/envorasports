@@ -90,6 +90,11 @@
       "short": "Sürpriz",
       "description": "Modelin piyasa fiyatına karşı anlamlı avantaj gördüğü, oynaklığı yüksek seçimler."
     },
+    "HAYAL": {
+      "name": "🔥 HAYAL",
+      "short": "🔥 HAYAL",
+      "description": "Yüksek gol market sinyallerine göre oluşturulan özel kuponlar."
+    },
     "COMBINATION_SYSTEM": {
       "name": "Kombinasyon Sistemleri",
       "short": "Sistemler",
@@ -302,6 +307,7 @@
     "couponSettings": "Tahmin ayarları",
     "systemSettings": "Sistem ayarları",
     "results": "Sonuçlar ve sonuçlandırma",
+    "hayal": "HAYAL sinyali",
     "dailyCounts": "Günlük tahmin adetleri",
     "oddsRules": "Oran kuralları",
     "qualityRules": "Kalite kuralları",

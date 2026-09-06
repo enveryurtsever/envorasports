@@ -4,9 +4,13 @@ import { createLogger } from '@/lib/logging/logger';
 import {
   ASIAN_HANDICAP_LINES,
   GOAL_LINES,
+  HALF_TIME_CORRECT_SCORE_MAX,
+  HALF_TIME_GOAL_LINES,
   MARKET,
   asianHandicapCode,
   goalsPlusCode,
+  halfTimeCorrectScoreCode,
+  halfTimeOverUnderCode,
   htftCode,
   overUnderCode,
 } from '@/lib/markets/registry';
@@ -95,6 +99,95 @@ const OVER_UNDER_LINES = GOAL_LINES.filter((line) => line < 5);
  * them one code would store two prices for the same selection.
  */
 const GOALS_PLUS_FROM_LINE: Record<string, number> = { '5.5': 6 };
+
+/**
+ * The three HAYAL markets, matched on the provider's bet *name*.
+ *
+ * Every other market here is keyed on a bet id, which is fine for ids that have
+ * been seen in a real response. These three had not been, and the account's
+ * daily budget was spent before the bet catalogue could be read — so guessing an
+ * id would have meant either silently mapping nothing or, worse, silently
+ * mapping the wrong bet. The response carries `name` alongside `id`, and the
+ * names are stable English strings, so matching on them needs no guess at all.
+ *
+ * The id a name resolves to is logged the first time it is seen, so the cheaper
+ * id path can be added later from evidence rather than from memory.
+ */
+type NamedBetKind = 'BTTS_BOTH_HALVES' | 'HT_CORRECT_SCORE' | 'HT_OVER_UNDER';
+
+const NAMED_BETS: Array<{ pattern: RegExp; kind: NamedBetKind }> = [
+  // "Both Teams To Score in Both Halves". Deliberately not "... First Half",
+  // which is a different bet and must never be folded into this one.
+  { pattern: /both\s*teams?\s*(to\s*)?score\s*in\s*both\s*halves/i, kind: 'BTTS_BOTH_HALVES' },
+  { pattern: /(exact|correct)\s*score\s*[-\u2013]?\s*(first|1st)\s*half/i, kind: 'HT_CORRECT_SCORE' },
+  { pattern: /^(first|1st)\s*half\s*(exact|correct)\s*score/i, kind: 'HT_CORRECT_SCORE' },
+  { pattern: /goals?\s*over\/?under\s*[-\u2013]?\s*(first|1st)\s*half/i, kind: 'HT_OVER_UNDER' },
+  { pattern: /^(first|1st)\s*half\s*goals?\s*over\/?under/i, kind: 'HT_OVER_UNDER' },
+];
+
+/** Bet names already reported, so discovery logs once rather than per fixture. */
+const seenNamedBets = new Set<string>();
+
+export function namedBetKind(name: string): NamedBetKind | null {
+  for (const entry of NAMED_BETS) {
+    if (entry.pattern.test(name)) return entry.kind;
+  }
+  return null;
+}
+
+/** Parses "2:2" or "2-2" as a half-time score. */
+function parseExactScore(raw: string): { home: number; away: number } | null {
+  const match = /^(\d+)\s*[:\-\u2013]\s*(\d+)$/.exec(raw.trim());
+  if (!match) return null;
+
+  const home = Number(match[1]);
+  const away = Number(match[2]);
+  if (!Number.isInteger(home) || !Number.isInteger(away)) return null;
+  // Outside the seeded grid there is no selection to attach the price to.
+  if (home > HALF_TIME_CORRECT_SCORE_MAX || away > HALF_TIME_CORRECT_SCORE_MAX) return null;
+  return { home, away };
+}
+
+/** One value of a name-matched HAYAL market, or null when we do not model it. */
+export function mapNamedBetValue(kind: NamedBetKind, value: string | number): Mapped | null {
+  const raw = String(value).trim();
+
+  if (kind === 'BTTS_BOTH_HALVES') {
+    const yes = /^yes$/i.test(raw);
+    const no = /^no$/i.test(raw);
+    if (!yes && !no) return null;
+    return {
+      marketCode: MARKET.BTTS_BOTH_HALVES,
+      selectionCode: yes ? 'BTTS_BOTH_HALVES_YES' : 'BTTS_BOTH_HALVES_NO',
+      parameters: { value: yes },
+      handicap: 0,
+    };
+  }
+
+  if (kind === 'HT_CORRECT_SCORE') {
+    const score = parseExactScore(raw);
+    if (!score) return null;
+    return {
+      marketCode: MARKET.HALF_TIME_CORRECT_SCORE,
+      selectionCode: halfTimeCorrectScoreCode(score.home, score.away),
+      parameters: { home: score.home, away: score.away },
+      handicap: 0,
+    };
+  }
+
+  const parsed = parseLine(raw);
+  if (!parsed) return null;
+  if (!HALF_TIME_GOAL_LINES.includes(parsed.line as (typeof HALF_TIME_GOAL_LINES)[number])) {
+    return null;
+  }
+  return {
+    marketCode: MARKET.HALF_TIME_OVER_UNDER,
+    selectionCode: halfTimeOverUnderCode(parsed.side, parsed.line),
+    parameters: { line: parsed.line, side: parsed.side },
+    handicap: 0,
+  };
+}
+
 
 type Mapped = {
   marketCode: string;
@@ -260,7 +353,20 @@ function mapEntry(raw: RawOddsEntry, capturedAt: Date): ProviderOddsEvent {
   for (const bookmaker of raw.bookmakers ?? []) {
     for (const bet of bookmaker.bets ?? []) {
       for (const value of bet.values ?? []) {
-        const mapped = mapBetValue(bet.id, value.value);
+        /**
+         * Id first, then name. The id table covers the markets already in
+         * production; the name table covers the HAYAL markets, whose ids are
+         * not yet known from a real response.
+         */
+        const kind = namedBetKind(bet.name ?? '');
+        if (kind && !seenNamedBets.has(bet.name)) {
+          seenNamedBets.add(bet.name);
+          log.info('named bet matched', { kind, betId: bet.id, betName: bet.name });
+        }
+
+        const mapped = kind
+          ? mapNamedBetValue(kind, value.value)
+          : mapBetValue(bet.id, value.value);
         if (!mapped) continue;
 
         const price = Number(value.odd);

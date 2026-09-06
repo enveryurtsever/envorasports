@@ -160,3 +160,69 @@ describe('registry coverage', () => {
     expect(settle(sel('SOME_FUTURE_MARKET', 'X', {}))).toBe('PENDING');
   });
 });
+
+describe('HAYAL markets', () => {
+  const finished = (
+    homeScore: number,
+    awayScore: number,
+    halfTimeHomeScore: number,
+    halfTimeAwayScore: number,
+  ): MatchResultInput => ({
+    status: 'FINISHED',
+    homeScore,
+    awayScore,
+    halfTimeHomeScore,
+    halfTimeAwayScore,
+    totalCorners: null,
+    totalCards: null,
+  });
+
+  const settle = (marketCode: string, selectionCode: string, parameters: Record<string, unknown>, result: MatchResultInput) =>
+    settleSelection({ marketCode, selectionCode, parameters, handicap: 0 }, result);
+
+  it('settles both-halves BTTS only when all four sides scored', () => {
+    // 2-2 at the break, 3-3 at the end: both teams scored in both halves.
+    expect(
+      settle('BTTS_BOTH_HALVES', 'BTTS_BOTH_HALVES_YES', { value: true }, finished(3, 3, 2, 2)),
+    ).toBe('WON');
+    // Four goals in the first half, none in the second — not both halves.
+    expect(
+      settle('BTTS_BOTH_HALVES', 'BTTS_BOTH_HALVES_YES', { value: true }, finished(2, 2, 2, 2)),
+    ).toBe('LOST');
+    // The away side never scored after the break.
+    expect(
+      settle('BTTS_BOTH_HALVES', 'BTTS_BOTH_HALVES_YES', { value: true }, finished(3, 2, 1, 2)),
+    ).toBe('LOST');
+    expect(
+      settle('BTTS_BOTH_HALVES', 'BTTS_BOTH_HALVES_NO', { value: false }, finished(2, 2, 2, 2)),
+    ).toBe('WON');
+  });
+
+  it('never guesses a second half from a missing half-time score', () => {
+    const noHalfTime: MatchResultInput = {
+      status: 'FINISHED',
+      homeScore: 3,
+      awayScore: 3,
+      halfTimeHomeScore: null,
+      halfTimeAwayScore: null,
+      totalCorners: null,
+      totalCards: null,
+    };
+    expect(
+      settle('BTTS_BOTH_HALVES', 'BTTS_BOTH_HALVES_YES', { value: true }, noHalfTime),
+    ).toBe('PENDING');
+    expect(settle('HALF_TIME_CORRECT_SCORE', 'HT_CS_2_2', { home: 2, away: 2 }, noHalfTime)).toBe('PENDING');
+    expect(settle('HALF_TIME_OVER_UNDER', 'HT_OVER_1_5', { line: 1.5, side: 'OVER' }, noHalfTime)).toBe('PENDING');
+  });
+
+  it('settles the half-time score and the half-time goal lines', () => {
+    expect(settle('HALF_TIME_CORRECT_SCORE', 'HT_CS_2_2', { home: 2, away: 2 }, finished(4, 3, 2, 2))).toBe('WON');
+    expect(settle('HALF_TIME_CORRECT_SCORE', 'HT_CS_2_2', { home: 2, away: 2 }, finished(4, 3, 2, 1))).toBe('LOST');
+
+    expect(settle('HALF_TIME_OVER_UNDER', 'HT_OVER_1_5', { line: 1.5, side: 'OVER' }, finished(3, 1, 2, 0))).toBe('WON');
+    expect(settle('HALF_TIME_OVER_UNDER', 'HT_OVER_2_5', { line: 2.5, side: 'OVER' }, finished(3, 1, 2, 0))).toBe('LOST');
+    expect(settle('HALF_TIME_OVER_UNDER', 'HT_UNDER_1_5', { line: 1.5, side: 'UNDER' }, finished(3, 1, 1, 0))).toBe('WON');
+    // Second-half goals must not leak into a first-half line.
+    expect(settle('HALF_TIME_OVER_UNDER', 'HT_OVER_2_5', { line: 2.5, side: 'OVER' }, finished(6, 0, 1, 0))).toBe('LOST');
+  });
+});

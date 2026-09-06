@@ -10,6 +10,7 @@ import {
   runFeatureRebuild,
   runFixtureTopup,
   runMatchOddsSync,
+  runHayal,
   runNarration,
   runResultSync,
   runSettlementSweep,
@@ -150,6 +151,13 @@ const JOBS: ScheduledJob[] = [
     name: 'rebuild-features',
     everyMs: 24 * 60 * MINUTE,
     run: () => runFeatureRebuild(),
+  },
+  {
+    // Reads stored prices only, so it costs no provider quota and can run
+    // often enough to catch a fixture the moment its signal market is priced.
+    name: 'hayal',
+    everyMs: 30 * MINUTE,
+    run: () => runHayal(),
   },
 ];
 

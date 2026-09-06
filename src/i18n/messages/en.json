@@ -90,6 +90,11 @@
       "short": "Surprise",
       "description": "Higher variance selections where the model sees a meaningful edge over the market price."
     },
+    "HAYAL": {
+      "name": "🔥 HAYAL",
+      "short": "🔥 HAYAL",
+      "description": "Special coupons built from high-goal market signals."
+    },
     "COMBINATION_SYSTEM": {
       "name": "Combination Systems",
       "short": "Systems",
@@ -302,6 +307,7 @@
     "couponSettings": "Prediction settings",
     "systemSettings": "System settings",
     "results": "Results & settlement",
+    "hayal": "HAYAL signal",
     "dailyCounts": "Daily prediction counts",
     "oddsRules": "Odds rules",
     "qualityRules": "Quality rules",

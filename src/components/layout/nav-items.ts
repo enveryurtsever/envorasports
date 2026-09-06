@@ -37,4 +37,5 @@ export const ADMIN_NAV: NavItem[] = [
   { href: '/admin/settings/coupons', labelKey: 'couponSettings' },
   { href: '/admin/settings/schedule', labelKey: 'scheduleSettings' },
   { href: '/admin/results', labelKey: 'results' },
+  { href: '/admin/hayal', labelKey: 'hayal' },
 ];

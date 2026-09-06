@@ -9,6 +9,9 @@ import { cn } from '@/lib/format/cn';
 import type { UnlockedCoupon } from '@/services/coupons/coupon-access';
 
 const ACCENT: Record<string, 'emerald' | 'gold' | 'none'> = {
+  // HAYAL is a market-pattern slate, not a model output: given its own accent
+  // so a reader can tell at a glance that it is a different kind of thing.
+  HAYAL: 'gold',
   HIGH_CONFIDENCE: 'emerald',
   BALANCED_PICKS: 'none',
   HIGH_VALUE: 'gold',

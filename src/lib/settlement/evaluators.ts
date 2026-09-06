@@ -58,6 +58,78 @@ const overUnder: MarketSettlementEvaluator = {
   },
 };
 
+/**
+ * Goals scored in each half, from the two scores we already store.
+ *
+ * The second half is the difference between full time and half time, so no
+ * extra data is needed — but every one of the four numbers must be present, or
+ * the difference is a guess. A missing half-time score is PENDING, never LOST.
+ */
+function halfGoals(result: MatchResultInput): {
+  firstHalf: { home: number; away: number };
+  secondHalf: { home: number; away: number };
+} | null {
+  const { homeScore, awayScore, halfTimeHomeScore, halfTimeAwayScore } = result;
+  if (
+    homeScore === null ||
+    awayScore === null ||
+    halfTimeHomeScore === null ||
+    halfTimeAwayScore === null
+  ) {
+    return null;
+  }
+
+  return {
+    firstHalf: { home: halfTimeHomeScore, away: halfTimeAwayScore },
+    secondHalf: { home: homeScore - halfTimeHomeScore, away: awayScore - halfTimeAwayScore },
+  };
+}
+
+/** Both sides score before the break and again after it — the HAYAL signal. */
+const bttsBothHalves: MarketSettlementEvaluator = {
+  marketCode: MARKET.BTTS_BOTH_HALVES,
+  evaluate(selection, result) {
+    const halves = halfGoals(result);
+    if (halves === null) return 'PENDING';
+
+    const both =
+      halves.firstHalf.home > 0 &&
+      halves.firstHalf.away > 0 &&
+      halves.secondHalf.home > 0 &&
+      halves.secondHalf.away > 0;
+
+    const expected = selection.parameters?.value === true;
+    return won(both === expected);
+  },
+};
+
+const halfTimeCorrectScore: MarketSettlementEvaluator = {
+  marketCode: MARKET.HALF_TIME_CORRECT_SCORE,
+  evaluate(selection, result) {
+    const home = readNumber(selection.parameters, 'home');
+    const away = readNumber(selection.parameters, 'away');
+    if (home === null || away === null) return 'PENDING';
+    if (result.halfTimeHomeScore === null || result.halfTimeAwayScore === null) return 'PENDING';
+
+    return won(result.halfTimeHomeScore === home && result.halfTimeAwayScore === away);
+  },
+};
+
+const halfTimeOverUnder: MarketSettlementEvaluator = {
+  marketCode: MARKET.HALF_TIME_OVER_UNDER,
+  evaluate(selection, result) {
+    const line = readNumber(selection.parameters, 'line');
+    const side = readString(selection.parameters, 'side');
+    if (line === null || (side !== 'OVER' && side !== 'UNDER')) return 'PENDING';
+    if (result.halfTimeHomeScore === null || result.halfTimeAwayScore === null) return 'PENDING';
+
+    const total = result.halfTimeHomeScore + result.halfTimeAwayScore;
+    // Half lines cannot land on the line, but a whole one can: that is a push.
+    if (total === line) return 'PUSHED';
+    return won(side === 'OVER' ? total > line : total < line);
+  },
+};
+
 const btts: MarketSettlementEvaluator = {
   marketCode: MARKET.BTTS,
   evaluate(selection, result) {
@@ -204,6 +276,9 @@ export const EVALUATORS: MarketSettlementEvaluator[] = [
   teamTotal,
   corners,
   cards,
+  bttsBothHalves,
+  halfTimeCorrectScore,
+  halfTimeOverUnder,
 ];
 
 const REGISTRY = new Map(EVALUATORS.map((e) => [e.marketCode, e]));
