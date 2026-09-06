@@ -24,12 +24,7 @@ import {
 import { buildSystemPlan, parseSystemSizes, SystemPlanError } from '@/lib/coupons/system-math';
 import { combinationCount } from '@/lib/math/combinatorics';
 import { MIN_COUPON_STAKE } from '@/lib/format/currency';
-import {
-  MARKET,
-  findSelection,
-  handicapDuplicatesMatchResult,
-  handicapPushes,
-} from '@/lib/markets/registry';
+import { MARKET } from '@/lib/markets/registry';
 
 const log = createLogger('coupons:generator');
 
@@ -215,16 +210,19 @@ function systemStakePerColumn(configured: number, columns: number): number {
 }
 
 /**
- * Handicaps not offered on a coupon: whole lines, which refund on an exact
- * margin and cannot say so in a chip, and +/-0.5, which is the match result
- * under another name.
+ * Asian handicap is priced and modelled, but never put on a coupon.
+ *
+ * It is not a market a Turkish bulletin carries in this form. Nesine's
+ * "Handikaplı Maç Sonucu" is a different bet — three-way, whole goals, quoted
+ * as a virtual score — so borrowing its name would be wrong, and two attempts
+ * at plain language ("2+ fark kaybetmez", "Heerenveen +1,5") both came back as
+ * unreadable. A selection nobody can read is not a tip, whatever its edge.
+ *
+ * The prices stay: they are a real second opinion on the same match and the
+ * model is better for having them.
  */
 function isUnofferableHandicap(candidate: Candidate): boolean {
-  if (candidate.marketCode !== MARKET.ASIAN_HANDICAP) return false;
-  const definition = findSelection(candidate.marketCode, candidate.selectionCode);
-  const handicap = definition?.parameters?.handicap;
-  if (typeof handicap !== 'number') return false;
-  return handicapPushes(handicap) || handicapDuplicatesMatchResult(handicap);
+  return candidate.marketCode === MARKET.ASIAN_HANDICAP;
 }
 
 function refOf(candidate: Candidate): SelectionRef {

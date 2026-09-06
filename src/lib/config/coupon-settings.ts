@@ -205,7 +205,7 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     category: 'HIGH_VALUE',
     // Ten distinct fixtures per coupon, and only so many are priced.
     couponCount: 1,
-    allowedMarkets: [MARKET.MATCH_RESULT, MARKET.DOUBLE_CHANCE, MARKET.ASIAN_HANDICAP],
+    allowedMarkets: [MARKET.MATCH_RESULT, MARKET.DOUBLE_CHANCE, MARKET.OVER_UNDER],
     minTotalOdds: 300,
     minSelections: 10,
     maxSelections: 11,
@@ -294,11 +294,8 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     minCombinedProbability: 0.4,
     oneSelectionPerMatch: true,
     /**
-     * The safe end of the bulletin. Asian handicap earns its place here now
-     * that only the half-lines are offered: "+1.5" is one of the most reliable
-     * selections there is, and excluding the market cost the category two
-     * thirds of its candidates. Half-time and 6+ goals stay out — a Banko is
-     * not built on a coin-flip half or a five-percent event.
+     * The safe end of the bulletin, in markets a reader already knows. 6+ goals
+     * stays out — a Banko is not built on a five-percent event.
      */
     allowedMarkets: [
       MARKET.DOUBLE_CHANCE,
@@ -306,7 +303,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
       MARKET.MATCH_RESULT,
       MARKET.BTTS,
       MARKET.TEAM_TOTAL,
-      MARKET.ASIAN_HANDICAP,
+      MARKET.HALF_TIME_RESULT,
     ],
   },
   BALANCED_PICKS: {
@@ -314,7 +311,7 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     enabled: true,
     // §30's example default range.
     couponCount: 3,
-    minTotalOdds: 1.75,
+    minTotalOdds: 5,
     maxTotalOdds: 6,
     minSelections: 2,
     maxSelections: 5,
@@ -325,7 +322,8 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     maxRisk: 0.6,
     maxCorrelation: 0.4,
     minDataQuality: 0.5,
-    minCombinedProbability: 0.35,
+    // 5.00 prices at roughly 20%, so the floor follows the odds down.
+    minCombinedProbability: 0.15,
     oneSelectionPerMatch: true,
     allowedMarkets: [],
   },

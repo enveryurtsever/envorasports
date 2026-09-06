@@ -14,13 +14,11 @@ import {
 } from '@/lib/schedule/bulletin-schedule';
 import { dateKeyToUtcMidnight, weekdayOfDateKey } from '@/lib/time/zoned';
 import { getNotableWins, getWeeklyStats } from '@/services/stats/weekly-stats';
-import { getFeaturedStandings, getMostPricedMatches } from '@/services/stats/standings';
+import { getMostPricedMatches } from '@/services/stats/standings';
 import { referenceStakeFor } from '@/lib/format/currency';
 import { cached } from '@/lib/cache/ttl-cache';
 import { MetricCard, PremiumCard, SectionHeading } from '@/components/ui/card';
 import { WeeklySummary } from '@/components/stats/weekly-summary';
-import { StandingsTable } from '@/components/stats/standings-table';
-import { StandingsTabs } from '@/components/stats/standings-tabs';
 import { PopularMatches } from '@/components/stats/popular-matches';
 import { CouponCard } from '@/components/predictions/coupon-card';
 import { getCategoryView, getFreePreviewPolicy } from '@/services/coupons/coupon-access';
@@ -48,10 +46,9 @@ async function loadDashboard(viewer: Awaited<ReturnType<typeof getViewer>>) {
   // Everything here is the same for every viewer and only changes when a job
   // runs, so it is held for a minute rather than re-queried per request.
   const TTL = 60_000;
-  const [stats, standings, popular, upcoming, wins, marketCount, activeModel, openCoupons] =
+  const [stats, popular, upcoming, wins, marketCount, activeModel, openCoupons] =
     await Promise.all([
       cached('home:weeklyStats', TTL, () => getWeeklyStats()),
-      cached('home:standings', TTL, () => getFeaturedStandings()),
       cached(`home:popular:${week.startDate}`, TTL, () =>
         getMostPricedMatches({ from: week.startUtc, to: week.endUtc }, 6),
       ),
@@ -108,7 +105,6 @@ async function loadDashboard(viewer: Awaited<ReturnType<typeof getViewer>>) {
     isPublicationToday: isPublicationDay(today, schedule),
     nextPublication: nextPublicationDate(today, schedule),
     stats,
-    standings,
     popular,
     upcoming,
     wins,
@@ -349,40 +345,6 @@ export default async function DashboardPage({ params }: { params: Promise<{ loca
       </section>
 
       {/* League tables, computed from stored results, one tab per league. */}
-      {data.standings.length > 0 ? (
-        <section>
-          <SectionHeading title={tw('standings')} />
-          <StandingsTabs
-            labels={data.standings.map((table) => table.leagueName)}
-            panels={data.standings.map((table) => (
-              <StandingsTable key={table.leagueId} standings={table} limit={10} />
-            ))}
-          />
-        </section>
-      ) : null}
-
-      <section>
-        <SectionHeading title={tSched('systemReadiness')} />
-        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-          <MetricCard label={t('marketsAnalysed')} value={data.marketCount} tone="violet" />
-          <MetricCard
-            label={t('modelStatus')}
-            value={
-              data.activeModel
-                ? `${data.activeModel.name}-${data.activeModel.version}`
-                : tc('notAvailable')
-            }
-            tone={data.activeModel ? 'emerald' : 'muted'}
-          />
-          <MetricCard label={tSched('timezone')} value={data.schedule.timezone} tone="muted" />
-          <MetricCard
-            label={tSched('publicationDay')}
-            value={dayLabel(data.nextPublication)}
-            tone={data.isPublicationToday ? 'emerald' : 'sky'}
-          />
-        </div>
-      </section>
-
       <p className="text-xs text-muted-dark">{tDisc('risk')}</p>
     </div>
   );
