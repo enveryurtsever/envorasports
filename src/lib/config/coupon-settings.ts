@@ -233,8 +233,12 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     minEdge: 0,
     minExpectedValue: 0,
     maxRisk: 0.95,
-    // Five İY/MS legs needing three is a far better bet than four needing four.
-    system: { systemType: 'SYSTEM_2_3', minBaseSelections: 4, maxBaseSelections: 6 },
+    // Never smaller than a three: a two-leg column is barely a system. Three of
+    // six is a materially harder ask than two of five, so the floor on a
+    // column's chance comes down with it — the number the reader sees is the
+    // chance the coupon returns, and that is reported as it falls out.
+    minCombinedProbability: 0.005,
+    system: { systemType: 'SYSTEM_3_4_5', minBaseSelections: 5, maxBaseSelections: 7 },
   },
   {
     key: 'goals6',
@@ -250,10 +254,14 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     minEdge: 0,
     minExpectedValue: 0,
     maxRisk: 0.98,
-    // 6+ goals is rare enough that asking for two of four is already ambitious,
-    // and no way of playing it produces a high number.
-    minCombinedProbability: 0.002,
-    system: { systemType: 'SYSTEM_2_3', minBaseSelections: 4, maxBaseSelections: 6 },
+    /**
+     * 6+ goals lands about once in twenty. Three of them is a hard ask however
+     * it is played, so the slate is given more legs to draw three from — three
+     * of eight rather than three of five — and the floor reflects what that
+     * actually comes to rather than what would be nice.
+     */
+    minCombinedProbability: 0.0005,
+    system: { systemType: 'SYSTEM_3_4', minBaseSelections: 6, maxBaseSelections: 8 },
   },
 ];
 
@@ -380,7 +388,9 @@ export const DEFAULT_SYSTEM_SETTINGS: SystemCouponSettings = {
   enabled: true,
   // Turkish slips combine sizes: "Sistem 3,4,5" over 8 legs is
   // C(8,3)+C(8,4)+C(8,5) = 182 columns on one coupon.
-  allowedSystemTypes: ['SYSTEM_2_3', 'SYSTEM_3_4', 'SYSTEM_3_4_5', 'SYSTEM_4_5_6'],
+  // Threes and up. A two-of-n fills half its columns with pairs, which returns
+  // little and costs the same per column as a three.
+  allowedSystemTypes: ['SYSTEM_3_4', 'SYSTEM_3_4_5', 'SYSTEM_4_5_6'],
   defaultSystemType: 'SYSTEM_3_4_5',
   // A system is a way of playing a set of picks, not a separate product, so it
   // is generated from a real category's pool rather than its own.

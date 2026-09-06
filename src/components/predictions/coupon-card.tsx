@@ -154,7 +154,7 @@ export async function CouponCard({
         <div className="grid grid-cols-2 gap-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
           <div className="min-w-0">
             <span className="block text-[0.6rem] tracking-wide text-muted uppercase">
-              {t('totalOdds')}
+              {coupon.system ? t('maxOdds') : t('totalOdds')}
             </span>
             <span
               className={cn(
@@ -162,7 +162,7 @@ export async function CouponCard({
                 METRIC_TOKENS.odds.text,
               )}
             >
-              {format.number(coupon.totalOdds, 'odds')}
+              {format.number(coupon.system ? coupon.system.maxOdds : coupon.totalOdds, 'odds')}
             </span>
           </div>
 

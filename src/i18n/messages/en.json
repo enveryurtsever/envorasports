@@ -126,7 +126,8 @@
     "startsInHours": "in {hours}h {minutes}m",
     "startsInMinutes": "in {minutes} min",
     "started": "Started",
-    "inPlay": "In play"
+    "inPlay": "In play",
+    "maxOdds": "Max odds"
   },
   "metrics": {
     "odds": "Odds",

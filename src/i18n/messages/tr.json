@@ -126,7 +126,8 @@
     "startsInHours": "{hours} saat {minutes} dk sonra",
     "startsInMinutes": "{minutes} dk sonra",
     "started": "Başladı",
-    "inPlay": "Maçlar oynanıyor"
+    "inPlay": "Maçlar oynanıyor",
+    "maxOdds": "Maks. oran"
   },
   "metrics": {
     "odds": "Oran",

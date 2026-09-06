@@ -13,6 +13,8 @@ async function main() {
     where: { id: row.id },
     data: {
       couponCount: d.couponCount,
+      allowedSystemTypes: d.allowedSystemTypes,
+      defaultSystemType: d.defaultSystemType,
       stakePerColumn: new Prisma.Decimal(d.stakePerColumn),
       minBaseSelections: d.minBaseSelections,
       maxBaseSelections: d.maxBaseSelections,

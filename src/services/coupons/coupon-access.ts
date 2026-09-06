@@ -48,6 +48,15 @@ export interface CouponSystemInfo {
   totalStake: number;
   /** What every column landing would pay. */
   maxReturn: number;
+  /**
+   * Sum of the columns' odds — what Nesine prints as "Maks. Oran".
+   *
+   * The accumulator odds of all the legs is the wrong number to show beside a
+   * system's maximum return: a reader multiplies it by the stake and lands
+   * three orders of magnitude out, because a system pays its columns, not the
+   * full parlay. This one times the misli *is* the maximum return.
+   */
+  maxOdds: number;
   /** What the columns that actually won returned. */
   totalReturn: number;
   winningColumns: number;
@@ -213,6 +222,10 @@ function toUnlocked(coupon: CouponRow): UnlockedCoupon {
           stakePerColumn: Number(coupon.systemCoupon.stakePerColumn),
           totalStake: Number(coupon.systemCoupon.totalStake),
           maxReturn: Number(coupon.systemCoupon.maxReturn),
+          maxOdds:
+            Number(coupon.systemCoupon.stakePerColumn) > 0
+              ? Number(coupon.systemCoupon.maxReturn) / Number(coupon.systemCoupon.stakePerColumn)
+              : 0,
           totalReturn: Number(coupon.systemCoupon.totalReturn),
           winningColumns: coupon.systemCoupon.winningColumns,
           currency: coupon.systemCoupon.currency,
