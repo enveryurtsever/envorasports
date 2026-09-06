@@ -155,6 +155,82 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
 
   const byExternalId = new Map(due.map((m) => [m.externalId, m]));
 
+  /**
+   * Ask by date, not by fixture.
+   *
+   * The batched `ids` parameter is refused on the Free plan, so asking per
+   * fixture meant one request each: sixty-eight of a hundred-request day just
+   * to learn one Sunday's scores, and nothing left for anything else. A date
+   * costs one request whatever it holds, and the fixtures we did not ask about
+   * are simply dropped from the answer.
+   */
+  const dateKeys = [
+    ...new Set(due.map((match) => match.scheduledKickoffUtc.toISOString().slice(0, 10))),
+  ].sort();
+
+  if (provider.getFixturesByDate && dateKeys.length > 0 && dateKeys.length < due.length) {
+    for (const dateKey of dateKeys) {
+      let fixtures: ProviderFixture[];
+      try {
+        fixtures = await provider.getFixturesByDate(new Date(`${dateKey}T00:00:00.000Z`));
+        result.requestsSpent++;
+      } catch (error) {
+        log.error('result date fetch failed', { date: dateKey, error: String(error) });
+        // A budget refusal proves nothing about the match, so no attempt is
+        // recorded against it; the next tick tries again.
+        if (isPreflightFailure(error)) continue;
+
+        const onDate = due.filter(
+          (match) => match.scheduledKickoffUtc.toISOString().slice(0, 10) === dateKey,
+        );
+        await prisma.match.updateMany({
+          where: { id: { in: onDate.map((m) => m.id) } },
+          data: { resultSyncAttempts: { increment: 1 }, resultLastSyncedAt: now },
+        });
+        continue;
+      }
+
+      const wanted = fixtures.filter((fixture) => byExternalId.has(fixture.externalId));
+      result.checked += wanted.length;
+
+      for (const fixture of wanted) {
+        const known = byExternalId.get(fixture.externalId);
+        if (!known) continue;
+
+        const becameFinal = await applyFixtureResult(known.id, fixture, now);
+        result.updated++;
+        if (becameFinal) {
+          result.finished++;
+          result.finishedMatchIds.push(known.id);
+        }
+      }
+
+      // Fixtures we asked about that the date did not carry still consumed an
+      // attempt: the provider answered, it simply had nothing for them.
+      const returned = new Set(wanted.map((f) => f.externalId));
+      const missing = due.filter(
+        (match) =>
+          match.scheduledKickoffUtc.toISOString().slice(0, 10) === dateKey &&
+          !returned.has(match.externalId),
+      );
+      if (missing.length > 0) {
+        await prisma.match.updateMany({
+          where: { id: { in: missing.map((m) => m.id) } },
+          data: { resultSyncAttempts: { increment: 1 }, resultLastSyncedAt: now },
+        });
+      }
+    }
+
+    log.info('result sync complete', {
+      candidates: result.candidates,
+      checked: result.checked,
+      finished: result.finished,
+      requests: result.requestsSpent,
+      dates: dateKeys.length,
+    });
+    return result;
+  }
+
   for (let i = 0; i < due.length; i += BATCH_SIZE) {
     const batch = due.slice(i, i + BATCH_SIZE);
     let fixtures: ProviderFixture[];

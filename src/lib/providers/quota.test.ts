@@ -73,18 +73,27 @@ function snapshot(overrides: Partial<QuotaSnapshot> = {}): QuotaSnapshot {
 }
 
 describe('probeIsDue', () => {
-  it('does not probe a provider that is not on hold', () => {
-    expect(probeIsDue(snapshot({ exhausted: false }), new Date('2026-09-06T23:00:00Z'))).toBe(false);
-  });
+  const spentAt = new Date('2026-09-06T04:00:00Z');
 
   it('holds for the whole interval rather than letting a burst through', () => {
-    // The old guard released thirty calls every ten minutes here.
-    const justAfter = new Date('2026-09-06T04:09:00Z');
-    expect(probeIsDue(snapshot(), justAfter, 30)).toBe(false);
+    // The original guard released thirty calls every ten minutes here.
+    expect(probeIsDue(spentAt, new Date('2026-09-06T04:09:00Z'), 30)).toBe(false);
   });
 
   it('allows exactly one probe once the interval has passed', () => {
-    const later = new Date('2026-09-06T04:31:00Z');
-    expect(probeIsDue(snapshot(), later, 30)).toBe(true);
+    expect(probeIsDue(spentAt, new Date('2026-09-06T04:31:00Z'), 30)).toBe(true);
+  });
+
+  it('probes immediately when nothing is known about the last call', () => {
+    // A closed gate with no record behind it must not stay closed forever.
+    expect(probeIsDue(null, new Date('2026-09-06T04:00:00Z'), 30)).toBe(true);
+  });
+
+  it('reopens after a long silence, which is what broke a whole day', () => {
+    // 04:52 spent, no call attempted since; by 23:00 the provider's own window
+    // has almost certainly rolled and nothing had asked.
+    expect(probeIsDue(new Date('2026-09-06T04:52:00Z'), new Date('2026-09-06T23:00:00Z'), 30)).toBe(
+      true,
+    );
   });
 });

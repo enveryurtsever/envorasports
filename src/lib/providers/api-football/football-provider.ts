@@ -217,6 +217,12 @@ export function createApiFootballProvider(config: {
 }): FootballDataProvider {
   const client = createApiFootballClient(config);
 
+  /**
+   * Remembered per process: the Free plan refuses the batched `ids` parameter,
+   * and finding that out again on every run costs a request we cannot spare.
+   */
+  let idsParameterUnavailable = false;
+
   return {
     name: API_FOOTBALL,
 
@@ -266,9 +272,13 @@ export function createApiFootballProvider(config: {
     },
 
     async getFixturesByDate(date: Date): Promise<ProviderFixture[]> {
-      const raw = await client.fetch<RawFixture[]>('/fixtures', {
-        date: date.toISOString().slice(0, 10),
-      });
+      const raw = await client.fetch<RawFixture[]>(
+        '/fixtures',
+        { date: date.toISOString().slice(0, 10) },
+        // Results are what this budget is for; an unsettled coupon is worse
+        // than a stale price, so this may spend the probe a held budget allows.
+        { allowProbe: true },
+      );
       return raw.map(mapFixture);
     },
 
@@ -287,17 +297,55 @@ export function createApiFootballProvider(config: {
 
       const results: ProviderFixture[] = [];
       for (const batch of batches) {
+        /**
+         * Do not re-learn a plan restriction on every run.
+         *
+         * The batched `ids` form is refused outright on the Free plan, and
+         * asking anyway spent the single probe a held budget allows — so the
+         * per-fixture fallback that follows was then blocked by the gate and
+         * result sync did nothing at all. Once refused, it stays refused for
+         * the life of the process.
+         */
+        if (idsParameterUnavailable) {
+          for (const [index, id] of batch.entries()) {
+            const raw = await client.fetch<RawFixture[]>(
+              '/fixtures',
+              { id },
+              { allowProbe: index === 0 },
+            );
+            results.push(...raw.map(mapFixture));
+          }
+          continue;
+        }
+
         try {
-          const raw = await client.fetch<RawFixture[]>('/fixtures', { ids: batch.join('-') });
+          /**
+           * Results are the one thing worth probing a closed budget for.
+           *
+           * An unsettled coupon is worse than a slightly stale price: the
+           * reader is left with a slip that never resolves. So this call may
+           * spend the one probe a held budget allows, which is how the day's
+           * results get in the moment the provider's window rolls.
+           */
+          const raw = await client.fetch<RawFixture[]>(
+            '/fixtures',
+            { ids: batch.join('-') },
+            { allowProbe: true },
+          );
           results.push(...raw.map(mapFixture));
         } catch (error) {
           if (!isPlanRestriction(error)) throw error;
 
+          idsParameterUnavailable = true;
           log.info('ids parameter unavailable on this plan, fetching individually', {
             fixtures: batch.length,
           });
-          for (const id of batch) {
-            const raw = await client.fetch<RawFixture[]>('/fixtures', { id });
+          for (const [index, id] of batch.entries()) {
+            const raw = await client.fetch<RawFixture[]>(
+              '/fixtures',
+              { id },
+              { allowProbe: index === 0 },
+            );
             results.push(...raw.map(mapFixture));
           }
         }

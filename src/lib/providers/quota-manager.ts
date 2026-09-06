@@ -90,6 +90,30 @@ export async function getQuotaSnapshot(
   ]);
 
   const counted = aggregate._sum.cost ?? 0;
+
+  /**
+   * The provider's own figure outranks our arithmetic.
+   *
+   * Our window is the UTC day; the provider's rolls on its own schedule, hours
+   * earlier. Counting alone, a day that logged 228 calls against a budget of
+   * 100 reads as "nothing left" until midnight — even after the provider has
+   * reset and is serving again. That is exactly what happened: eighteen hours
+   * with no results while the allowance was there to be used.
+   *
+   * Only readings from calls the provider actually answered are trusted; a
+   * refusal carries no balance worth believing.
+   */
+  const reported = await prisma.providerRequestLog.findFirst({
+    where: {
+      provider: policy.provider,
+      createdAt: { gte: start, lt: end },
+      success: true,
+      quotaRemaining: { not: null },
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { quotaRemaining: true },
+  });
+
   const windowRolled = row !== null && row.windowStart.getTime() !== start.getTime();
 
   // A hold expires only when its own reset time passes, or when our accounting
@@ -98,13 +122,20 @@ export async function getQuotaSnapshot(
     row?.resetAt !== null && row?.resetAt !== undefined && row.resetAt.getTime() <= now.getTime();
   const exhausted = row?.exhausted === true && !windowRolled && !holdExpired;
 
-  const remaining = exhausted ? 0 : Math.max(0, policy.budget - counted);
+  const counterRemaining = Math.max(0, policy.budget - counted);
+  // The smaller of the two still wins, so this can only ever be more cautious
+  // than the provider — never more permissive.
+  const remaining = exhausted
+    ? 0
+    : reported?.quotaRemaining != null
+      ? Math.min(reported.quotaRemaining, policy.budget)
+      : counterRemaining;
 
   return {
     provider: policy.provider,
     window: policy.window,
     budget: policy.budget,
-    used: Math.min(policy.budget, counted),
+    used: Math.max(0, policy.budget - remaining),
     remaining,
     windowStart: start,
     windowEnd: end,
@@ -233,14 +264,20 @@ export interface QuotaGateOptions {
   probeIntervalMinutes?: number;
 }
 
-/** True when enough time has passed to spend one call finding out. */
+/**
+ * True when enough time has passed to spend one call finding out.
+ *
+ * `since` is whichever is known: the moment the provider declared itself spent,
+ * or — when nothing declared anything and the count alone closed the gate — the
+ * last call we made at all.
+ */
 export function probeIsDue(
-  snapshot: QuotaSnapshot,
+  since: Date | null,
   now: Date,
   intervalMinutes = DEFAULT_PROBE_INTERVAL_MINUTES,
 ): boolean {
-  if (!snapshot.exhausted || !snapshot.exhaustedAt) return false;
-  return now.getTime() - snapshot.exhaustedAt.getTime() >= intervalMinutes * 60_000;
+  if (!since) return true;
+  return now.getTime() - since.getTime() >= intervalMinutes * 60_000;
 }
 
 /**
@@ -257,29 +294,61 @@ export async function assertQuotaAvailable(
   const cost = options.cost ?? 1;
   const snapshot = await getQuotaSnapshot(policy, now);
 
-  if (snapshot.exhausted) {
-    const probeAllowed =
-      options.allowProbe === true &&
-      probeIsDue(snapshot, now, options.probeIntervalMinutes ?? DEFAULT_PROBE_INTERVAL_MINUTES);
-
-    if (!probeAllowed) {
-      throw new QuotaExceededError(policy.provider, snapshot.used, policy.budget);
-    }
-    // One call through, to learn whether the provider's window has rolled.
-    // Re-stamping the hold is what keeps it to one per interval.
-    await prisma.providerQuotaState.update({
-      where: { provider: policy.provider },
-      data: { exhaustedAt: now },
-    });
-    return snapshot;
-  }
-
   const reserve = options.respectReserve
     ? Math.ceil(policy.budget * (policy.reserveRatio ?? 0.2))
     : 0;
 
-  if (snapshot.remaining - reserve < cost) {
+  const blocked = snapshot.exhausted || snapshot.remaining - reserve < cost;
+  if (!blocked) return snapshot;
+
+  /**
+   * A closed gate must never be able to hold itself closed.
+   *
+   * Our own count runs on the UTC day; the provider's window rolls on its own
+   * schedule, hours earlier. When the count says nothing is left, no call goes
+   * out, and with no call there is no fresh reading — so the count still says
+   * nothing is left. That deadlock cost a whole day of results: 228 requests
+   * were logged against a budget of 100 by 04:52, and not one call was
+   * attempted in the eighteen hours after, while the provider had very likely
+   * reset in between.
+   *
+   * The probe is the only way out, and it has to apply to *both* ways the gate
+   * closes — the provider declaring itself spent, and our own arithmetic. One
+   * call per interval either way: if the provider really is spent it answers
+   * without serving data, which costs nothing and refreshes the reading.
+   */
+  const interval = options.probeIntervalMinutes ?? DEFAULT_PROBE_INTERVAL_MINUTES;
+  const lastActivity = snapshot.exhaustedAt ?? (await lastCallAt(policy.provider));
+
+  if (options.allowProbe !== true || !probeIsDue(lastActivity, now, interval)) {
     throw new QuotaExceededError(policy.provider, snapshot.used, policy.budget);
   }
+
+  // Stamp the attempt so the next probe waits its turn, whether or not a
+  // durable exhaustion row exists yet.
+  await prisma.providerQuotaState.upsert({
+    where: { provider: policy.provider },
+    update: { exhaustedAt: now },
+    create: {
+      provider: policy.provider,
+      budget: policy.budget,
+      used: snapshot.used,
+      remaining: 0,
+      windowStart: snapshot.windowStart,
+      windowEnd: snapshot.windowEnd,
+      exhausted: false,
+      exhaustedAt: now,
+    },
+  });
   return snapshot;
+}
+
+/** When we last called this provider at all, from the request log. */
+async function lastCallAt(provider: string): Promise<Date | null> {
+  const row = await prisma.providerRequestLog.findFirst({
+    where: { provider },
+    orderBy: { createdAt: 'desc' },
+    select: { createdAt: true },
+  });
+  return row?.createdAt ?? null;
 }

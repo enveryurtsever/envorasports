@@ -39,7 +39,11 @@ export function createApiFootballClient(config: {
   baseUrl: string;
   quota: QuotaPolicy;
 }): {
-  fetch<T>(path: string, query?: Record<string, string | number | boolean | undefined>, options?: { respectReserve?: boolean }): Promise<T>;
+  fetch<T>(
+    path: string,
+    query?: Record<string, string | number | boolean | undefined>,
+    options?: { respectReserve?: boolean; allowProbe?: boolean },
+  ): Promise<T>;
 } {
   const http = new HttpClient({
     provider: API_FOOTBALL,
@@ -57,12 +61,13 @@ export function createApiFootballClient(config: {
     async fetch<T>(
       path: string,
       query?: Record<string, string | number | boolean | undefined>,
-      options?: { respectReserve?: boolean },
+      options?: { respectReserve?: boolean; allowProbe?: boolean },
     ): Promise<T> {
       const envelope = await http.get<ApiFootballEnvelope<T>>({
         path,
         query,
         respectReserve: options?.respectReserve,
+        allowProbe: options?.allowProbe,
       });
       assertNoApiErrors(envelope, path);
       return envelope.response;
