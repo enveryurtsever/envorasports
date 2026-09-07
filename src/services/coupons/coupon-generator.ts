@@ -604,13 +604,16 @@ export function buildCategoryCoupons(
    *
    * `isDistinct` did not catch it because it asks whether the *combination*
    * differs, and swapping one leg of eight satisfies that while looking
-   * identical to a reader. So overlap is capped explicitly and the cap is
-   * loosened only when the tighter one cannot fill the slate — a third of the
-   * legs shared, then two thirds, then whatever is left. A pool that genuinely
-   * has nothing else still produces a coupon; it just never does so before the
-   * alternatives are exhausted.
+   * identical to a reader. Nor did a partial cap: with three eligible fixtures
+   * and two-leg coupons, "at most a third shared" still let every Banko share a
+   * match with every other Banko.
+   *
+   * So within a category no coupon reuses another's fixture at all. The second
+   * tier lifts that only when the first produced nothing — the case of a pool
+   * so thin that the alternative is an empty category, which is the only time
+   * repeating a match beats showing fewer coupons.
    */
-  const OVERLAP_TIERS = [1 / 3, 2 / 3, 1];
+  const OVERLAP_TIERS = [0, 1];
 
   for (const maxOverlap of OVERLAP_TIERS) {
     if (coupons.length >= target) break;
@@ -1199,7 +1202,9 @@ async function generateSystemCoupons(
    * a reader. Overlap is now capped on fixtures and loosened a step at a time,
    * so a slate reuses a match only when there is genuinely nothing else left.
    */
-  const ROUND_MAX_OVERLAP = [0, 1 / 3, 2 / 3, 1];
+  // Same rule as the straight coupons: no shared fixture inside a slate, and
+  // the exception only where the alternative is producing nothing at all.
+  const ROUND_MAX_OVERLAP = [0, 1];
 
   for (const round of ROUND_MAX_OVERLAP.keys()) {
     // Same rule as the straight coupons: a slate that already has something

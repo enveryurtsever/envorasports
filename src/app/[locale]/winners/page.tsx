@@ -4,6 +4,7 @@ import { getViewer } from '@/lib/auth/session';
 import { getReferenceStake } from '@/lib/format/currency';
 import { METRIC_TOKENS } from '@/lib/format/metric-tokens';
 import { EmptyState, MetricCard, PremiumCard } from '@/components/ui/card';
+import { formatSelection } from '@/lib/markets/labels';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,9 @@ export default async function WinnersPage({ params }: { params: Promise<{ locale
   const tw = await getTranslations('weekly');
   const tCat = await getTranslations('categories');
   const tc = await getTranslations('common');
+  const tm = await getTranslations('metrics');
+  // Untyped root accessor: selection labels resolve their own keys.
+  const translate = await getTranslations();
   const format = await getFormatter();
 
   const viewer = await getViewer();
@@ -58,6 +62,12 @@ export default async function WinnersPage({ params }: { params: Promise<{ locale
             id: true,
             odds: true,
             resultStatus: true,
+            // What was actually predicted, and how strongly. A winners page
+            // that shows only the price says what was paid but not what was
+            // called, which is the part a reader is judging.
+            marketCode: true,
+            selectionCode: true,
+            probability: true,
             match: {
               select: {
                 homeScore: true,
@@ -115,7 +125,7 @@ export default async function WinnersPage({ params }: { params: Promise<{ locale
       {winners.length === 0 ? (
         <EmptyState title={tw('noWinsYet')} hint={t('emptyHint')} />
       ) : (
-        <div className="space-y-4">
+        <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
           {winners.map((coupon) => {
             const paid = returnOf(coupon);
             return (
@@ -145,6 +155,21 @@ export default async function WinnersPage({ params }: { params: Promise<{ locale
                     <span className="text-muted">{t('totalOdds')} </span>
                     <span className={`tabular font-bold ${METRIC_TOKENS.odds.text}`}>
                       {format.number(Number(coupon.totalOdds), 'odds')}
+                    </span>
+                  </span>
+                  <span>
+                    {/* Mean leg probability, the same figure the coupon card
+                        leads with. Not the chance the coupon came in — that is
+                        already settled here, and it came in. */}
+                    <span className="text-muted">{tm('legStrength')} </span>
+                    <span className={`tabular font-bold ${METRIC_TOKENS.confidence.text}`}>
+                      {format.number(
+                        coupon.selections.length === 0
+                          ? 0
+                          : coupon.selections.reduce((sum, s) => sum + Number(s.probability), 0) /
+                              coupon.selections.length,
+                        'percent',
+                      )}
                     </span>
                   </span>
                   {coupon.systemCoupon ? (
@@ -191,6 +216,12 @@ export default async function WinnersPage({ params }: { params: Promise<{ locale
                         </span>
                         <span className="min-w-0 flex-1 truncate">
                           {selection.match.homeTeam.name} {tc('vs')} {selection.match.awayTeam.name}
+                          <span className="ml-2 rounded bg-white/10 px-1.5 py-0.5 text-[0.7rem] font-semibold whitespace-nowrap">
+                            {formatSelection(translate, selection.marketCode, selection.selectionCode, {
+                              home: selection.match.homeTeam.name,
+                              away: selection.match.awayTeam.name,
+                            })}
+                          </span>
                         </span>
                         {selection.match.homeScore !== null ? (
                           <span className="tabular shrink-0 text-muted">

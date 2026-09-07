@@ -158,15 +158,11 @@ export async function CouponCard({
               >
                 {format.number(legStrength, 'percent')}
               </span>
-              {/* The coupon's own chance, kept beside it. A system pays when its
-                  smallest size lands, so its number answers a different
-                  question again and is labelled accordingly. */}
-              <span className="mt-1 block border-t border-white/10 pt-1 text-[0.55rem] leading-none text-muted">
-                {coupon.system ? tm('returnProbability') : tm('landsShort')}{' '}
-                <span className={cn('tabular font-semibold', METRIC_TOKENS.modelProbability.text)}>
-                  {format.number(coupon.estimatedProbability, 'percent')}
-                </span>
-              </span>
+              {/* The coupon's own chance used to sit here beside the strength.
+                  Two percentages a line apart, one much smaller than the other,
+                  read as a contradiction rather than as two different
+                  questions — so the card states the one the reader is meant to
+                  compare and leaves the other to the analysis view. */}
             </span>
           )}
         </div>
