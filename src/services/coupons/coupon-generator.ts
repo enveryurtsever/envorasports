@@ -664,7 +664,11 @@ export function buildCategoryCoupons(
      * three slips with identical legs. So unlimited reuse is reserved for the
      * case the user actually asked about: nothing else could be found at all.
      */
-    if (maxOverlap >= 1 && coupons.length > 0) break;
+    // "Nothing produced yet" has to mean nothing in the *category*, not
+    // nothing from this builder. Sürpriz runs three of them — straight, system
+    // and tenfold — and each starting from an empty local list re-opened
+    // unlimited reuse of fixtures the previous builder had already spent.
+    if (maxOverlap >= 1 && (coupons.length > 0 || (ledger?.usedMatches.size ?? 0) > 0)) break;
 
     for (const groupKey of activeKeys) {
       if (coupons.length >= target) break;
@@ -876,12 +880,25 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
   let couponsGenerated = 0;
 
   /**
-   * One ledger for the whole publication, so a fixture spent by Banko is not
-   * spent again by Dengeli or by a Sürpriz slate. Each builder still relaxes
-   * the exclusion when a category cannot otherwise be filled, so a thin
-   * bulletin reuses a match rather than producing nothing.
+   * A ledger per category, not one for the publication.
+   *
+   * Inside a category, two coupons on the same fixture are one tip shown twice.
+   * Across categories they are not: Banko backing a side to avoid defeat and
+   * Sürpriz backing the same match to go over 3.5 are different bets on
+   * different questions, and a shared ledger was starving the later categories
+   * of the day's best fixtures to enforce a rule nobody wanted.
    */
-  const ledger: GenerationLedger = { usedMatches: new Set(), usedMarkets: new Set() };
+  const ledgers = new Map<string, GenerationLedger>();
+  const ledgerFor = (category: string): GenerationLedger => {
+    // One per category, shared by every slate inside it: Sürpriz is one
+    // category whether a coupon comes from its İY/MS slate or its 6+ one, and
+    // a reader sees them side by side.
+    const existing = ledgers.get(category);
+    if (existing) return existing;
+    const created: GenerationLedger = { usedMatches: new Set(), usedMarkets: new Set() };
+    ledgers.set(category, created);
+    return created;
+  };
 
   for (const [category, settings] of Object.entries(options.categorySettings) as Array<
     [CouponCategory, CouponCategorySettings]
@@ -905,7 +922,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       matrix,
       weights,
       groupKeys,
-      ledger,
+      ledgerFor(category),
       perDay,
     );
 
@@ -967,7 +984,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
         group.category,
         focusOffset,
         {
-          ledger,
+          ledger: ledgerFor(group.category),
           perDay,
           settings,
           couponCount: group.couponCount,
@@ -984,7 +1001,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       continue;
     }
 
-    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys, ledger, perDay);
+    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys, ledgerFor(group.category), perDay);
 
     for (const [index, coupon] of built.coupons.entries()) {
       await persistCoupon(
@@ -1023,7 +1040,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       groupKeys,
       sourceCategory as CouponCategory,
       couponsGenerated,
-      { ledger, perDay },
+      { ledger: ledgerFor(sourceCategory), perDay },
     );
     outcomes.push(systemOutcome.outcome);
     couponsGenerated += systemOutcome.produced;
@@ -1251,7 +1268,9 @@ async function generateSystemCoupons(
   for (const round of ROUND_MAX_OVERLAP.keys()) {
     // Same rule as the straight coupons: a slate that already has something
     // stops rather than repeating it. See OVERLAP_TIERS above.
-    if ((ROUND_MAX_OVERLAP[round] ?? 1) >= 1 && produced > 0) break;
+    // Same rule: slateMatches is seeded from the category ledger, so a slate
+    // that follows another in the same category is never "the first".
+    if ((ROUND_MAX_OVERLAP[round] ?? 1) >= 1 && (produced > 0 || slateMatches.size > 0)) break;
 
   for (const groupKey of groupKeys) {
     if (produced >= system.couponCount) break;

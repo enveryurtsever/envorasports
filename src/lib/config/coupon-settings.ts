@@ -203,8 +203,9 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
      */
     key: 'tenfold',
     category: 'HIGH_VALUE',
-    // Ten distinct fixtures per coupon, and only so many are priced.
-    couponCount: 1,
+    // Three asked for; ten distinct fixtures each, so a thin slate delivers
+    // fewer rather than repeating a fixture across them.
+    couponCount: 3,
     allowedMarkets: [MARKET.MATCH_RESULT, MARKET.DOUBLE_CHANCE, MARKET.OVER_UNDER],
     minTotalOdds: 300,
     minSelections: 10,

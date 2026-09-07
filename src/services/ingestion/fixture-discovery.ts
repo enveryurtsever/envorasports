@@ -374,6 +374,33 @@ async function resolveKnownTeam(name: string, leagueId: string): Promise<string 
    * for want of features. A tie on the name is broken by history, which is the
    * only thing the models can use.
    */
+  /**
+   * One name is the other with a club suffix on it.
+   *
+   * The archive writes "Blackburn", "Cardiff", "Newcastle"; the odds provider
+   * writes "Blackburn Rovers", "Cardiff City", "Newcastle United". Bigram
+   * similarity puts those at 0.55-0.71, well under a threshold that has to stay
+   * high because "Celta Vigo" scores 0.86 against "Celta de Vigo II" — a
+   * reserve side, and exactly the merge that must not happen.
+   *
+   * Stripping the suffixes outright is worse: "Manchester United" and
+   * "Manchester City" both become "manchester". So containment is only
+   * accepted when it is unambiguous — when exactly one team in the field is a
+   * whole-word prefix of the name being resolved.
+   */
+  const containment = (candidate: string): boolean => {
+    const a = normalized;
+    const b = normalizeTeamName(candidate);
+    if (a === b) return true;
+    // Short cores collide across clubs; below five characters this is guesswork.
+    const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+    if (shorter.length < 5) return false;
+    return longer === shorter || longer.startsWith(`${shorter} `);
+  };
+
+  /** Reserve and youth sides are separate clubs however close the name reads. */
+  const RESERVE = /\b(ii|iii|b|c|u\s?1[6-9]|u\s?2[0-3]|res|reserves?|academy|youth)\b/i;
+
   const rank = (teams: typeof inCompetition) => {
     let best: { id: string; score: number; matches: number } | null = null;
     for (const team of teams) {
@@ -418,8 +445,71 @@ async function resolveKnownTeam(name: string, leagueId: string): Promise<string 
    * score 0.27-0.43 against everything we hold, which is the answer we want.
    */
   const everyone = await prisma.team.findMany({ select });
-  const wide = rank(everyone);
-  return wide && wide.score >= WIDE_MAPPING_THRESHOLD ? wide.id : null;
+
+  /**
+   * An unambiguous containment match outranks the score threshold.
+   *
+   * Only when exactly one team qualifies: two would mean the shared core is a
+   * city rather than a club, and picking either would be a coin toss with a
+   * season's history behind it.
+   */
+  const contained = everyone.filter(
+    (team) =>
+      !RESERVE.test(team.name) &&
+      [team.name, ...team.aliases.map((alias) => alias.alias)].some(containment),
+  );
+  if (contained.length === 1) {
+    const team = contained[0] as (typeof everyone)[number];
+    await rememberSpelling(team.id, name);
+    return team.id;
+  }
+
+  const wide = rank(everyone.filter((team) => !RESERVE.test(team.name)));
+  if (wide && wide.score >= WIDE_MAPPING_THRESHOLD) {
+    await rememberSpelling(wide.id, name);
+    return wide.id;
+  }
+  return null;
+}
+
+/**
+ * Writes down a spelling once it has been worked out.
+ *
+ * Every resolution above is a search over every team we hold, repeated for each
+ * fixture of every run, to reach the same answer each time. The alias table is
+ * where that answer belongs: once "Blackburn Rovers" is known to be Blackburn,
+ * the next run finds it by name and never reasons about it again.
+ *
+ * Failures are swallowed. A spelling that cannot be recorded — because another
+ * team already claims it — is not a reason to abandon a fixture that resolved
+ * perfectly well; it just costs the search again next time.
+ */
+async function rememberSpelling(teamId: string, spelling: string): Promise<void> {
+  const normalized = normalizeTeamName(spelling);
+
+  try {
+    const claimed = await prisma.teamAlias.findFirst({
+      where: { source: THE_ODDS_API, normalized },
+      select: { id: true, teamId: true },
+    });
+    if (claimed) return;
+
+    await prisma.teamAlias.create({
+      data: {
+        teamId,
+        source: THE_ODDS_API,
+        alias: spelling,
+        normalized,
+        // Derived, not verified by a person: an operator reviewing the table
+        // should be able to tell the two apart.
+        confidence: 0.9,
+        verified: false,
+      },
+    });
+    log.debug('learned a team spelling', { spelling, teamId });
+  } catch (error) {
+    log.debug('could not record spelling, continuing', { spelling, error: String(error) });
+  }
 }
 
 interface MappingCandidate {
