@@ -10,7 +10,7 @@
     "highConfidence": "Banko",
     "balancedPicks": "Dengeli",
     "highValue": "Sürpriz",
-    "systems": "Kombinasyon Sistemleri",
+    "systems": "Sistem Kuponları",
     "matches": "Maçlar",
     "analysis": "Maç Analizi",
     "backtest": "Geriye Dönük Test",
@@ -96,13 +96,13 @@
       "description": "Yüksek gol market sinyallerine göre oluşturulan özel kuponlar."
     },
     "COMBINATION_SYSTEM": {
-      "name": "Kombinasyon Sistemleri",
+      "name": "Sistem Kuponları",
       "short": "Sistemler",
       "description": "Temel seçim kümesinin her K'lı kombinasyonu ayrı bir kolon olur."
     }
   },
   "predictions": {
-    "title": "Günün Tahminleri",
+    "title": "Haftanın Tahminleri",
     "subtitle": "Aşağıdaki her seçim bir model tahminidir, garanti değildir.",
     "count": "{count, plural, =0 {Tahmin yok} other {# tahmin}}",
     "selections": "{count, plural, other {# seçim}}",
@@ -226,7 +226,7 @@
     "weekSummary": "{matches} maç · {won} bildik · {lost} bilemedik"
   },
   "systems": {
-    "title": "Kombinasyon Sistemleri",
+    "title": "Sistem Kuponları",
     "systemType": "Sistem tipi",
     "baseSelections": "Temel seçim",
     "perColumn": "kolon başına",
@@ -265,7 +265,7 @@
       },
       "ELITE": {
         "name": "Elite",
-        "description": "Yüksek Değer tahminleri ve Kombinasyon Sistemleri dâhil tam erişim."
+        "description": "Yüksek Değer tahminleri ve Sistem Kuponları dâhil tam erişim."
       }
     }
   },
