@@ -1,7 +1,11 @@
 import { getTranslations, setRequestLocale } from 'next-intl/server';
 import { getViewer } from '@/lib/auth/session';
 import { getBulletinSchedule } from '@/lib/config/settings-service';
-import { bulletinWeek, todayInSchedule } from '@/lib/schedule/bulletin-schedule';
+import {
+  bulletinWeek,
+  previousBulletinWeek,
+  todayInSchedule,
+} from '@/lib/schedule/bulletin-schedule';
 import { dateKeyToUtcMidnight } from '@/lib/time/zoned';
 import { COUPON_CATEGORIES } from '@/lib/config/coupon-settings';
 import type { UnlockedCoupon } from '@/services/coupons/coupon-access';
@@ -13,6 +17,7 @@ import {
 import { EmptyState, SectionHeading } from '@/components/ui/card';
 import { LockedPanel } from '@/components/ui/locked-panel';
 import { CouponCard } from '@/components/predictions/coupon-card';
+import { WeekFilter } from '@/components/predictions/week-filter';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,11 +46,14 @@ function groupByFocus(
 
 export default async function PredictionsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ locale: string }>;
+  searchParams: Promise<{ week?: string }>;
 }) {
   const { locale } = await params;
   setRequestLocale(locale);
+  const { week: requestedWeek } = await searchParams;
 
   const t = await getTranslations('predictions');
   const tCat = await getTranslations('categories');
@@ -53,7 +61,11 @@ export default async function PredictionsPage({
 
   const viewer = await getViewer();
   const schedule = await getBulletinSchedule();
-  const week = bulletinWeek(todayInSchedule(schedule), schedule);
+  // Anything but the explicit "previous" is this week: a stale or hand-edited
+  // query string should show the live slate, never an empty page.
+  const selectedWeek = requestedWeek === 'previous' ? 'previous' : 'current';
+  const thisWeek = bulletinWeek(todayInSchedule(schedule), schedule);
+  const week = selectedWeek === 'previous' ? previousBulletinWeek(thisWeek, schedule) : thisWeek;
   const range = {
     from: dateKeyToUtcMidnight(week.startDate),
     to: dateKeyToUtcMidnight(week.endDate),
@@ -74,6 +86,12 @@ export default async function PredictionsPage({
       <header>
         <h1 className="text-3xl font-semibold tracking-tight">{t('title')}</h1>
         <p className="mt-2 max-w-2xl text-sm text-muted">{t('subtitle')}</p>
+        <div className="mt-4">
+          <WeekFilter
+            current={selectedWeek}
+            range={{ startDate: week.startDate, endDate: week.endDate }}
+          />
+        </div>
       </header>
 
       {views
@@ -120,7 +138,10 @@ export default async function PredictionsPage({
       ))}
 
       {views.every((view) => view.coupons.length === 0 && (view.hidden?.count ?? 0) === 0) ? (
-        <EmptyState title={t('noneThisWeek')} hint={t('noneThisWeekHint')} />
+        <EmptyState
+          title={selectedWeek === 'previous' ? t('nonePreviousWeek') : t('noneThisWeek')}
+          hint={selectedWeek === 'previous' ? t('nonePreviousWeekHint') : t('noneThisWeekHint')}
+        />
       ) : null}
     </div>
   );

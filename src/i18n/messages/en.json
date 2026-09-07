@@ -132,7 +132,12 @@
     "startsInMinutes": "in {minutes} min",
     "started": "Started",
     "inPlay": "In play",
-    "maxOdds": "Max odds"
+    "maxOdds": "Max odds",
+    "weekCurrent": "This week",
+    "weekPrevious": "Last week",
+    "weekFilterLabel": "Week selection",
+    "nonePreviousWeek": "No coupons recorded for last week",
+    "nonePreviousWeekHint": "No bulletin was published that week."
   },
   "metrics": {
     "odds": "Odds",

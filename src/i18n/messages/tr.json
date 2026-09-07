@@ -132,7 +132,12 @@
     "startsInMinutes": "{minutes} dk sonra",
     "started": "Başladı",
     "inPlay": "Maçlar oynanıyor",
-    "maxOdds": "Maks. oran"
+    "maxOdds": "Maks. oran",
+    "weekCurrent": "Bu hafta",
+    "weekPrevious": "Geçen hafta",
+    "weekFilterLabel": "Hafta seçimi",
+    "nonePreviousWeek": "Geçen hafta için kupon kaydı yok",
+    "nonePreviousWeekHint": "O hafta yayınlanmış bir bülten bulunmuyor."
   },
   "metrics": {
     "odds": "Oran",
