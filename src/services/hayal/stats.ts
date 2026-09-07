@@ -132,10 +132,22 @@ export async function gradeHayalSignals(options: { limit?: number } = {}): Promi
   return result;
 }
 
+/**
+ * Below this many graded fixtures a hit rate is not a finding.
+ *
+ * One match gives 100% and a fifty-point lift, and the page was presenting
+ * that beside a real baseline as though the two were comparable. Thirty is
+ * where a rate around a half has a standard error near nine points — still
+ * wide, but no longer arithmetic dressed up as evidence.
+ */
+export const MIN_COHORT_SAMPLE = 30;
+
 export interface CohortReport {
   label: string;
   sampleSize: number;
   hitRates: Record<HayalOutcomeKey, number | null>;
+  /** False while the sample is too small for the rates to mean anything. */
+  sufficient: boolean;
 }
 
 export interface HayalReport {
@@ -188,7 +200,7 @@ function summarise(label: string, rows: Array<{ outcomes: unknown }>): CohortRep
   if (sampleSize > 0) {
     for (const key of HAYAL_OUTCOME_KEYS) hitRates[key] = counts[key] / sampleSize;
   }
-  return { label, sampleSize, hitRates };
+  return { label, sampleSize, hitRates, sufficient: sampleSize >= MIN_COHORT_SAMPLE };
 }
 
 /**

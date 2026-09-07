@@ -98,6 +98,11 @@ export default async function AdminHayalPage({
                 <span className="ml-1 font-normal normal-case text-neutral-500">
                   (n={report.baseline.sampleSize})
                 </span>
+                {!report.baseline.sufficient ? (
+                  <span className="ml-1 font-normal normal-case text-amber-400">
+                    · yetersiz örneklem
+                  </span>
+                ) : null}
               </th>
               {report.cohorts.map((cohort) => (
                 <th key={cohort.label} className="px-4 py-3 text-right">
@@ -105,6 +110,11 @@ export default async function AdminHayalPage({
                   <span className="ml-1 font-normal normal-case text-neutral-500">
                     (n={cohort.sampleSize})
                   </span>
+                  {!cohort.sufficient ? (
+                    <span className="ml-1 font-normal normal-case text-amber-400">
+                      · yetersiz örneklem
+                    </span>
+                  ) : null}
                 </th>
               ))}
             </tr>
@@ -118,10 +128,17 @@ export default async function AdminHayalPage({
                 </td>
                 {report.cohorts.map((cohort) => {
                   const lift = report.lift[cohort.label]?.[key] ?? null;
+                  // A rate from a handful of fixtures is shown greyed and
+                  // without a lift: the lift is the claim, and there is not
+                  // enough behind it to make one.
                   return (
                     <td key={cohort.label} className="px-4 py-2.5 text-right tabular-nums">
-                      <span className="text-neutral-100">{pct(cohort.hitRates[key])}</span>
-                      <span className={`ml-2 text-xs ${liftTone(lift)}`}>{signed(lift)}</span>
+                      <span className={cohort.sufficient ? 'text-neutral-100' : 'text-neutral-600'}>
+                        {pct(cohort.hitRates[key])}
+                      </span>
+                      {cohort.sufficient ? (
+                        <span className={`ml-2 text-xs ${liftTone(lift)}`}>{signed(lift)}</span>
+                      ) : null}
                     </td>
                   );
                 })}
