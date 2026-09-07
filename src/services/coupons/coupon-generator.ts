@@ -737,7 +737,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     DEFAULT_SCORING_WEIGHTS,
   );
 
-  const [candidates, matrix] = await Promise.all([
+  const [allCandidates, matrix] = await Promise.all([
     loadCandidates(options.window, options.timezone, options.modelVersionId, asOf),
     loadCorrelationMatrix(),
   ]);
@@ -805,6 +805,30 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     modelVersionId: options.modelVersionId,
     generationRunId: run.id,
     asOf,
+  });
+
+  /**
+   * The pool's verdict is the one that counts.
+   *
+   * Building it and then ignoring it was the worst of both: the reasons were
+   * recorded and nothing acted on them, so a side with three matches of history
+   * — flagged INSUFFICIENT_HISTORY right there in the pool — still walked onto
+   * a Sürpriz coupon. The builders now see only what the pool passed.
+   */
+  const eligibleIds = new Set(
+    (
+      await prisma.selectionPool.findMany({
+        where: { generationRunId: run.id, eligible: true },
+        select: { predictionId: true },
+      })
+    ).map((row) => row.predictionId),
+  );
+
+  const candidates = allCandidates.filter((candidate) => eligibleIds.has(candidate.predictionId));
+  log.info('pool applied to candidate set', {
+    before: allCandidates.length,
+    after: candidates.length,
+    rejected: allCandidates.length - candidates.length,
   });
 
   const outcomes: CategoryOutcome[] = [];

@@ -81,8 +81,12 @@ interface BestPrice {
   marketCode: string;
   selectionCode: string;
   capturedAt: Date;
-  /** How many bookmakers quoted this selection — market agreement. */
+  /** How many bookmakers quoted this selection, after outliers were dropped. */
   quoteCount: number;
+  /** Quotes discarded for disagreeing with the consensus. */
+  quotesRejected: number;
+  /** Consensus price across the surviving quotes. */
+  medianPrice: Decimal;
   /** Spread between best and worst quote; wide spreads mean an unsure market. */
   dispersion: number;
 }
@@ -124,8 +128,9 @@ export async function getBestPrices(matchId: string, asOf: Date): Promise<Map<st
 
   const result = new Map<string, BestPrice>();
   for (const [, quotes] of bySelection) {
-    const prices = quotes.map((q) => Number(q.price));
-    const best = quotes.reduce((max, q) => (Number(q.price) > Number(max.price) ? q : max));
+    const usable = rejectOutlierQuotes(quotes);
+    const prices = usable.rows.map((q) => Number(q.price));
+    const best = usable.rows.reduce((max, q) => (Number(q.price) > Number(max.price) ? q : max));
     const min = Math.min(...prices);
     const max = Math.max(...prices);
 
@@ -138,12 +143,76 @@ export async function getBestPrices(matchId: string, asOf: Date): Promise<Map<st
       marketCode: best.market.code,
       selectionCode: best.selection.code,
       capturedAt: best.capturedAt,
-      quoteCount: quotes.length,
+      quoteCount: usable.rows.length,
+      quotesRejected: usable.rejected,
+      medianPrice: dec(usable.median),
       dispersion: max > 0 ? (max - min) / max : 0,
     });
   }
 
   return result;
+}
+
+/** Middle value of a sorted list; the mean of the two middles when even. */
+export function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? (sorted[mid] as number)
+    : ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
+}
+
+/**
+ * How far from the consensus a quote may sit before it is treated as an error.
+ *
+ * Over 1.5 is normally around 1.30. A stored quote of 15.00 for it is not a
+ * generous bookmaker, it is a bad row — and taking the highest price meant that
+ * row won every time, because "best" and "most likely to be wrong" are the same
+ * quote once a dozen books are in the table. It then produced the largest edge
+ * on the slate and walked straight onto a coupon.
+ */
+const OUTLIER_RATIO = 1.6;
+/** Below this many quotes there is no consensus to measure against. */
+const MIN_QUOTES_FOR_CONSENSUS = 3;
+
+interface QuoteRow {
+  price: Prisma.Decimal;
+  [key: string]: unknown;
+}
+
+/**
+ * Drops quotes that disagree with the consensus by more than the ratio above.
+ *
+ * Deliberately keeps taking the *best* surviving price: a reader can only bet
+ * what someone is offering, and the median is nobody's price. What changes is
+ * that the field it picks from no longer contains the obviously broken rows.
+ *
+ * With fewer than three books there is nothing to compare against, so every
+ * quote is kept — a thin market is a reason for less confidence, not a licence
+ * to invent a consensus from two numbers.
+ */
+export function rejectOutlierQuotes<T extends QuoteRow>(
+  quotes: T[],
+): { rows: T[]; rejected: number; median: number } {
+  const prices = quotes.map((q) => Number(q.price));
+  const middle = median(prices);
+
+  if (quotes.length < MIN_QUOTES_FOR_CONSENSUS || middle <= 0) {
+    return { rows: quotes, rejected: 0, median: middle };
+  }
+
+  const kept = quotes.filter((quote) => {
+    const price = Number(quote.price);
+    return price <= middle * OUTLIER_RATIO && price >= middle / OUTLIER_RATIO;
+  });
+
+  // Never strip a selection down to nothing: if the spread is so wide that
+  // everything looks like an outlier, the market itself is the anomaly and the
+  // dispersion score is what should carry that.
+  if (kept.length === 0) return { rows: quotes, rejected: 0, median: middle };
+
+  return { rows: kept, rejected: quotes.length - kept.length, median: middle };
 }
 
 /**
@@ -645,6 +714,10 @@ export async function runPredictions(
           },
           market: {
             quoteCount: price.quoteCount,
+            // What the consensus said, and how many quotes were thrown out for
+            // disagreeing with it — the audit trail for a price that looks odd.
+            medianPrice: Number(price.medianPrice.toFixed(3)),
+            quotesRejected: price.quotesRejected,
             dispersion: Number(price.dispersion.toFixed(4)),
             capturedAt: price.capturedAt.toISOString(),
           },
