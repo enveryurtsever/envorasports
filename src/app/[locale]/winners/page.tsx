@@ -125,7 +125,7 @@ export default async function WinnersPage({ params }: { params: Promise<{ locale
       {winners.length === 0 ? (
         <EmptyState title={tw('noWinsYet')} hint={t('emptyHint')} />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-2">
           {winners.map((coupon) => {
             const paid = returnOf(coupon);
             return (
