@@ -49,6 +49,21 @@ export interface MatchOddsSyncResult {
  */
 const DEFAULT_REFRESH_AFTER_MINUTES = 240;
 
+/**
+ * Markets no bulk feed carries, so this provider is the only source.
+ *
+ * The Odds API's competition endpoint serves 1X2, totals and spreads; the rest
+ * of a Turkish bulletin comes from here. A fixture is worth a request while any
+ * of these is missing, however recently its 1X2 was refreshed.
+ */
+const API_FOOTBALL_ONLY_MARKETS = [
+  'DOUBLE_CHANCE',
+  'BTTS',
+  'HALF_TIME_RESULT',
+  'HALF_TIME_FULL_TIME',
+  'TOTAL_GOALS_THRESHOLD',
+] as const;
+
 export async function syncMatchOddsForWindow(
   window: CoverageWindow,
   options: { maxFixtures?: number; now?: Date } = {},
@@ -65,6 +80,15 @@ export async function syncMatchOddsForWindow(
       scheduledKickoffUtc: { gte: window.startUtc, lt: window.endUtc },
       status: 'SCHEDULED',
       league: { active: true },
+      /**
+       * Only fixtures this provider can answer about.
+       *
+       * Discovery creates fixtures carrying the odds provider's event id — a
+       * hex hash — and `/odds?fixture=` rejects it outright ("must contain an
+       * integer"), one wasted request per fixture. They are priced in bulk
+       * elsewhere and reconciled once this provider serves them.
+       */
+      source: API_FOOTBALL_ODDS,
     },
     orderBy: { scheduledKickoffUtc: 'asc' },
     select: {
@@ -271,9 +295,20 @@ async function planOddsRequests(
   const ids = candidates.map((match) => match.id);
 
   const [captures, coupled, quota] = await Promise.all([
+    /**
+     * Freshness is judged on the markets only this provider serves.
+     *
+     * Judged on any odds at all, a fixture priced 1X2 in bulk minutes earlier
+     * looked covered and was skipped — so double chance, both-teams-to-score,
+     * half-time result, HT/FT and the goal ladder were never asked for, and the
+     * İY/MS and 6+ goals slates had nothing to build from at all.
+     */
     prisma.odds.groupBy({
       by: ['matchId'],
-      where: { matchId: { in: ids } },
+      where: {
+        matchId: { in: ids },
+        market: { code: { in: [...API_FOOTBALL_ONLY_MARKETS] } },
+      },
       _max: { capturedAt: true },
     }),
     prisma.couponSelection.findMany({

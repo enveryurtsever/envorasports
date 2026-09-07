@@ -116,7 +116,16 @@ export async function reconcileDiscoveredFixtures(
   const result = { candidates: 0, reconciled: 0, requestsSpent: 0 };
   if (!provider.getFixturesByDate) return result;
 
-  const horizonDays = options.horizonDays ?? 1;
+  /**
+   * Two days, which is as far as the plan will serve.
+   *
+   * Reconciliation is what lets a discovered fixture be priced by this provider
+   * at all — until it carries an integer id, `/odds?fixture=` rejects it and
+   * the five markets only this provider serves stay empty. The free plan
+   * answers "try from <yesterday> to <tomorrow>", so anything further out
+   * simply has to wait for its date to come round.
+   */
+  const horizonDays = options.horizonDays ?? 2;
 
   const orphans = await prisma.match.findMany({
     where: {

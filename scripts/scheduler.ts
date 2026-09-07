@@ -144,14 +144,18 @@ const JOBS: ScheduledJob[] = [
   },
   {
     /**
-     * Fallback only, now that bulk odds carry the slate.
+     * The only source for most of a Turkish bulletin.
      *
-     * It spends the fixture provider's hard budget one fixture at a time — 219
-     * of 100 requests in a day, at its worst — so it runs rarely and exists for
-     * the case where the odds provider's monthly credits run out entirely.
+     * Bulk pricing covers 1X2 and totals and nothing else, so double chance,
+     * both-teams-to-score, half-time result, HT/FT and the goal ladder come
+     * from here or not at all — moving pricing wholesale to the odds provider
+     * silently emptied five markets and left Banko with two legs.
+     *
+     * Affordable again because results are fetched by date now: one or two
+     * requests a day, against a hundred.
      */
     name: 'match-odds',
-    everyMs: 12 * 60 * MINUTE,
+    everyMs: 4 * 60 * MINUTE,
     run: () => runMatchOddsSync(),
   },
   {
