@@ -258,6 +258,41 @@ async function createMatchFromEvent(
 
   if (!homeTeamId || !awayTeamId || homeTeamId === awayTeamId) return null;
 
+  /**
+   * Last check before creating: does this fixture already exist?
+   *
+   * `findMatchForEvent` looks only at fixtures that are unmapped and still
+   * scheduled, because its job is to map. Anything already mapped, or already
+   * finished, is invisible to it — so when the fixture provider had served the
+   * same match first, nothing was found and a second copy was created beside
+   * it. Eighteen of them, each showing SCHEDULED with no score next to a twin
+   * that had the result.
+   *
+   * Teams and kickoff identify a fixture; the mapping state does not.
+   */
+  const twin = await prisma.match.findFirst({
+    where: {
+      homeTeamId,
+      awayTeamId,
+      scheduledKickoffUtc: {
+        gte: new Date(event.commenceTimeUtc.getTime() - KICKOFF_TOLERANCE_MS),
+        lte: new Date(event.commenceTimeUtc.getTime() + KICKOFF_TOLERANCE_MS),
+      },
+    },
+    select: { id: true, oddsEventExternalId: true },
+  });
+
+  if (twin) {
+    // Carry the event id over if it has none, so the odds sync can price it.
+    if (!twin.oddsEventExternalId) {
+      await prisma.match.update({
+        where: { id: twin.id },
+        data: { oddsEventExternalId: event.externalId },
+      });
+    }
+    return twin.id;
+  }
+
   const season = await prisma.season.findFirst({
     where: { leagueId },
     orderBy: { startDate: 'desc' },

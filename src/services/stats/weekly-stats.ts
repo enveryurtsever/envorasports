@@ -57,37 +57,6 @@ export interface WeeklyStats {
   couponsSettled: number;
 }
 
-/**
- * Whether a week has anything worth showing yet: a finished match, or a coupon
- * that has been graded. A week of fixtures that have not kicked off is a
- * schedule, not a summary.
- */
-async function weekHasActivity(week: {
-  startUtc: Date;
-  endUtc: Date;
-  startDate: string;
-  endDate: string;
-}): Promise<boolean> {
-  const [finished, settled] = await Promise.all([
-    prisma.match.count({
-      where: {
-        scheduledKickoffUtc: { gte: week.startUtc, lt: week.endUtc },
-        status: { in: ['FINISHED', 'AWARDED'] },
-      },
-    }),
-    prisma.coupon.count({
-      where: {
-        targetDate: {
-          gte: dateKeyToUtcMidnight(week.startDate),
-          lte: dateKeyToUtcMidnight(week.endDate),
-        },
-        resultStatus: { not: 'PENDING' },
-      },
-    }),
-  ]);
-  return finished > 0 || settled > 0;
-}
-
 function ratio(correct: number, incorrect: number): number | null {
   const decided = correct + incorrect;
   return decided === 0 ? null : correct / decided;
@@ -103,22 +72,15 @@ export async function getWeeklyStats(weekOffset = 0): Promise<WeeklyStats> {
   }
 
   /**
-   * Do not empty the board the moment the week rolls.
+   * The week is Monday to Sunday and it resets on Monday, empty or not.
    *
-   * The week starts on Monday, and Sunday is the biggest slate of it — so at
-   * local midnight the summary switched to a week with nothing in it yet and
-   * the day that had just finished disappeared. Nothing was lost; it had simply
-   * moved into a bucket the page was no longer showing.
-   *
-   * When the current week has produced nothing to report, the last week that
-   * did is shown instead. `isCurrentWeek` already travels with the payload, so
-   * the page can say which week it is looking at rather than implying it is
-   * this one.
+   * An earlier version fell back to the last week with results when the current
+   * one had none — which meant that on Monday morning the page still showed the
+   * week before, under a heading that said "this week". Carrying yesterday's
+   * numbers into today is worse than showing a fresh board: the reader cannot
+   * tell which week they are looking at, and a zero on Monday is the truth.
+   * Past weeks remain reachable through `weekOffset`.
    */
-  if (weekOffset === 0 && !(await weekHasActivity(week))) {
-    const previous = previousBulletinWeek(week, schedule);
-    if (await weekHasActivity(previous)) week = previous;
-  }
 
   const [matchesTotal, matchesFinished, predictionGroups, coupons] = await Promise.all([
     prisma.match.count({

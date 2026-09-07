@@ -216,11 +216,28 @@ export async function buildSelectionPool(options: BuildPoolOptions): Promise<Poo
     const sample = readSampleSize(breakdown);
     if (sample !== null && sample < 5) reasons.push(REASON.INSUFFICIENT_HISTORY);
 
-    // A selection is eligible unless something disqualifying is against it.
-    // MISSING_XG and NO_MARKET_PRICE are recorded but do not disqualify.
-    const disqualifying = reasons.filter(
-      (code) => code !== REASON.MISSING_XG && code !== REASON.NO_MARKET_PRICE,
-    );
+    /**
+     * The pool decides whether a selection is *sound*, not whether it is *good*.
+     *
+     * Value is a per-category judgement and every category already carries its
+     * own minEdge and minExpectedValue. Enforcing an EV floor here as well
+     * quietly destroyed Banko: after the market prior pulls a probability
+     * toward the price, the safest legs — high chance, short odds — have the
+     * least edge of anything on the slate, so 29 of 72 selections were thrown
+     * out for negative EV and the ones left could not clear a 55% combined
+     * probability over two legs. A Banko is not a value bet; it is a certainty
+     * bet, and the category says so with minEdge 0.
+     *
+     * So EV, missing xG and an unpriced market are recorded and passed on.
+     * Staleness, a probability floor, thin data and a three-match history are
+     * not: those make a selection unsound whoever wants to use it.
+     */
+    const ADVISORY = new Set<string>([
+      REASON.MISSING_XG,
+      REASON.NO_MARKET_PRICE,
+      REASON.NEGATIVE_EV,
+    ]);
+    const disqualifying = reasons.filter((code) => !ADVISORY.has(code));
     const eligible = disqualifying.length === 0;
 
     if (eligible) {
