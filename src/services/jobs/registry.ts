@@ -60,6 +60,7 @@ export type JobName =
   | 'result-sync'
   | 'settlement'
   | 'historical-import'
+  | 'archive-refresh'
   | 'hayal';
 
 export interface JobRequest {
@@ -518,6 +519,83 @@ export async function runHayal(): Promise<JobOutcome> {
   });
 }
 
+/**
+ * Refreshes the football-data.co.uk archive for the current season.
+ *
+ * The files are rewritten as results come in, so a season pulled once goes
+ * stale within days — and this archive is where the models' history lives:
+ * forty-three clubs were carrying the archive's record rather than the fixture
+ * provider's. It costs no provider quota at all, which is why it can run
+ * weekly against every division we model rather than being rationed.
+ *
+ * Import is idempotent — a fixture already held is matched and updated, not
+ * duplicated — so re-running only ever fills gaps.
+ */
+export async function runArchiveRefresh(): Promise<JobOutcome> {
+  const now = new Date();
+  // European seasons run August to May, so a January fixture belongs to the
+  // season that started the previous year.
+  const season = now.getUTCMonth() >= 6 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+
+  return runJob({
+    jobName: 'archive-refresh',
+    runKey: runKeyFor('archive-refresh', `${season}-${isoWeek(now)}`),
+    lockKey: 'historical-import',
+    lockTtlMs: 60 * 60 * 1000,
+    handler: async ({ logger, heartbeat }) => {
+      const divisions = (
+        await prisma.league.findMany({
+          where: { active: true, csvDivision: { not: null } },
+          select: { csvDivision: true },
+          orderBy: { tier: 'asc' },
+        })
+      )
+        .map((league) => league.csvDivision)
+        .filter((division): division is string => division !== null);
+
+      let matches = 0;
+      let odds = 0;
+      const unresolved = new Set<string>();
+
+      for (const division of divisions) {
+        // Current season only: earlier ones are settled and re-reading them
+        // would spend an hour rewriting rows that cannot have changed.
+        const results = await importSeasons(division, [season]);
+        for (const result of results) {
+          matches += result.matchesImported;
+          odds += result.oddsImported;
+          result.unresolvedTeams.forEach((name) => unresolved.add(name));
+        }
+        await heartbeat();
+      }
+
+      logger.info('archive refreshed', { season, divisions: divisions.length, matches, odds });
+      return {
+        itemsProcessed: matches,
+        itemsFailed: unresolved.size,
+        metadata: {
+          season,
+          divisions,
+          matches,
+          odds,
+          unresolvedTeams: [...unresolved].slice(0, 50),
+        },
+      };
+    },
+  });
+}
+
+/** ISO week number, so the run key changes once a week and not once a day. */
+function isoWeek(date: Date): number {
+  const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = (target.getUTCDay() + 6) % 7;
+  target.setUTCDate(target.getUTCDate() - day + 3);
+  const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4));
+  const firstDay = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDay + 3);
+  return 1 + Math.round((target.getTime() - firstThursday.getTime()) / (7 * 864e5));
+}
+
 /** Bulk history import. Unmetered, so it may run for a long time. */
 export async function runHistoricalImport(request: JobRequest = {}): Promise<JobOutcome> {
   const divisions = request.divisions ?? [];
@@ -592,6 +670,8 @@ export async function runNamedJob(name: JobName, request: JobRequest = {}): Prom
       return runHistoricalImport(request);
     case 'hayal':
       return runHayal();
+    case 'archive-refresh':
+      return runArchiveRefresh();
     case 'discovery':
       return runDiscovery();
     case 'bulk-odds':
@@ -610,6 +690,7 @@ export const JOB_NAMES: JobName[] = [
   'result-sync',
   'settlement',
   'historical-import',
+  'archive-refresh',
   'hayal',
 ];
 

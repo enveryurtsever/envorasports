@@ -354,6 +354,10 @@ async function resolveKnownTeam(name: string, leagueId: string): Promise<string 
     // Providers spell the same club differently; the alias table is where
     // those spellings have already been reconciled.
     aliases: { select: { alias: true, normalized: true } },
+    // The same club can exist twice — the archive writes "Sp Lisbon" and the
+    // fixture provider "Sporting CP" — and only one of the two carries the
+    // history the models need.
+    _count: { select: { homeMatches: true, awayMatches: true } },
   } as const;
 
   const inCompetition = await prisma.team.findMany({
@@ -361,15 +365,34 @@ async function resolveKnownTeam(name: string, leagueId: string): Promise<string 
     select,
   });
 
+  /**
+   * Best name match, and among equals the one that has actually played.
+   *
+   * "Sporting Lisbon" matched a `Sporting CP` row with two matches behind it
+   * while `Sp Lisbon`, the same club with a hundred and forty, sat beside it —
+   * so the fixture was created against an empty team and the engine skipped it
+   * for want of features. A tie on the name is broken by history, which is the
+   * only thing the models can use.
+   */
   const rank = (teams: typeof inCompetition) => {
-    let best: { id: string; score: number } | null = null;
+    let best: { id: string; score: number; matches: number } | null = null;
     for (const team of teams) {
       const names = [team.name, ...team.aliases.map((alias) => alias.alias)];
       const score = Math.max(
         ...names.map((value) => similarity(normalized, normalizeTeamName(value))),
         ...team.aliases.map((alias) => similarity(normalized, alias.normalized)),
       );
-      if (!best || score > best.score) best = { id: team.id, score };
+      const matches = team._count.homeMatches + team._count.awayMatches;
+
+      if (!best) {
+        best = { id: team.id, score, matches };
+        continue;
+      }
+      // A clearly better name always wins; within a whisker of it, history does.
+      const better =
+        score > best.score + 0.02 ||
+        (Math.abs(score - best.score) <= 0.02 && matches > best.matches);
+      if (better) best = { id: team.id, score, matches };
     }
     return best;
   };

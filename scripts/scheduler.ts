@@ -6,6 +6,7 @@ import {
   todayInSchedule,
 } from '../src/lib/schedule/bulletin-schedule';
 import {
+  runArchiveRefresh,
   runBulkOdds,
   runBulletinPublication,
   runDiscovery,
@@ -175,6 +176,16 @@ const JOBS: ScheduledJob[] = [
     name: 'rebuild-features',
     everyMs: 24 * 60 * MINUTE,
     run: () => runFeatureRebuild(),
+  },
+  {
+    /**
+     * The archive is rewritten as results come in, and it is where the models'
+     * history lives. Unmetered, so weekly costs nothing; the run key is the ISO
+     * week, so a restart does not re-import what this week already pulled.
+     */
+    name: 'archive-refresh',
+    everyMs: 12 * 60 * MINUTE,
+    run: () => runArchiveRefresh(),
   },
   {
     // Reads stored prices only, so it costs no provider quota and can run

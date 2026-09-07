@@ -271,6 +271,30 @@ function refOf(candidate: Candidate): SelectionRef {
  * legs: every extra selection multiplies the odds but divides the probability,
  * and §30 asks for the target odds band, not the longest possible accumulator.
  */
+/**
+ * How far outside its odds band a coupon may land and still be offered.
+ *
+ * The band is a target, not a rule of the game: a slate that can make a good
+ * coupon at 5.4 against a floor of 6.0 should not be thrown away over the
+ * difference. Ten per cent is wide enough to stop the band rejecting near
+ * misses and narrow enough that a "6 to 25" coupon is still recognisably one.
+ *
+ * It is deliberately not applied to the quality gates — probability,
+ * confidence, data quality and risk are answers about the selections, and a
+ * near miss there is still a miss.
+ */
+const ODDS_BAND_TOLERANCE = 0.1;
+
+function oddsFloor(settings: CouponCategorySettings): number {
+  return Number(settings.minTotalOdds) * (1 - ODDS_BAND_TOLERANCE);
+}
+
+function oddsCeiling(settings: CouponCategorySettings): number | null {
+  return settings.maxTotalOdds === null
+    ? null
+    : Number(settings.maxTotalOdds) * (1 + ODDS_BAND_TOLERANCE);
+}
+
 export function buildCoupon(
   pool: Candidate[],
   settings: CouponCategorySettings,
@@ -352,7 +376,8 @@ export function buildCoupon(
 
     const nextOdds = totalOdds.times(candidate.odds);
     // Overshooting the ceiling is a rejection, not something to fix later.
-    if (settings.maxTotalOdds !== null && nextOdds.greaterThan(settings.maxTotalOdds)) {
+    const ceiling = oddsCeiling(settings);
+    if (ceiling !== null && nextOdds.greaterThan(ceiling)) {
       // A shorter-priced candidate may still fit, so keep scanning.
       continue;
     }
@@ -381,14 +406,15 @@ export function buildCoupon(
     marketCounts.set(candidate.marketCode, (marketCounts.get(candidate.marketCode) ?? 0) + 1);
     totalOdds = nextOdds;
 
-    if (chosen.length >= settings.minSelections && totalOdds.greaterThanOrEqualTo(settings.minTotalOdds)) {
+    if (chosen.length >= settings.minSelections && totalOdds.greaterThanOrEqualTo(oddsFloor(settings))) {
       break;
     }
   }
 
   if (chosen.length < settings.minSelections) return null;
-  if (totalOdds.lessThan(settings.minTotalOdds)) return null;
-  if (settings.maxTotalOdds !== null && totalOdds.greaterThan(settings.maxTotalOdds)) return null;
+  if (totalOdds.lessThan(oddsFloor(settings))) return null;
+  const finalCeiling = oddsCeiling(settings);
+  if (finalCeiling !== null && totalOdds.greaterThan(finalCeiling)) return null;
 
   const refs = chosen.map(refOf);
   const correlation = couponCorrelation(matrix, refs);
@@ -527,6 +553,15 @@ export function buildCategoryCoupons(
   weights: CouponScoringWeights,
   groupKeys: LocalDateKey[],
   ledger?: GenerationLedger,
+  /**
+   * Whether a coupon must stay inside one match day.
+   *
+   * Under WINDOW grouping `groupKeys` holds a single key — the window's first
+   * day — and filtering candidates on it silently discarded every fixture from
+   * the other two days. A coupon does not have to be one day's football, and
+   * when it is not, the group is the whole window.
+   */
+  perDay = true,
 ): { coupons: BuiltCoupon[]; poolSize: number; shortfallReason: string | null } {
   const pool = filterForCategory(candidates, settings);
   if (pool.length === 0) {
@@ -548,11 +583,14 @@ export function buildCategoryCoupons(
    * became two, every time, and the shortfall was reported as a thin candidate
    * pool rather than as the arithmetic it was.
    */
-  const activeKeys = groupKeys.filter((key) => pool.some((c) => c.targetDate === key));
+  const inGroup = (candidate: Candidate, key: LocalDateKey) =>
+    perDay ? candidate.targetDate === key : true;
+
+  const activeKeys = groupKeys.filter((key) => pool.some((c) => inGroup(c, key)));
   const perGroup = Math.max(1, Math.ceil(settings.couponCount / Math.max(1, activeKeys.length)));
 
   for (const groupKey of activeKeys) {
-    const groupPool = pool.filter((c) => c.targetDate === groupKey);
+    const groupPool = pool.filter((c) => inGroup(c, groupKey));
 
     // Six strategies over a small pool converge on the same few legs, which is
     // why a category asked for five and produced two. Once they are exhausted
@@ -563,7 +601,7 @@ export function buildCategoryCoupons(
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (coupons.length >= settings.couponCount * OVERBUILD) break;
-      if (coupons.filter((c) => c.targetDate === groupKey).length >= perGroup) break;
+      if (!perDay ? coupons.length >= perGroup : coupons.filter((c) => c.targetDate === groupKey).length >= perGroup) break;
 
       const strategy = STRATEGIES[attempt % STRATEGIES.length]!;
       const offset = Math.floor(attempt / STRATEGIES.length);
@@ -630,7 +668,7 @@ export function buildCategoryCoupons(
 
     for (const groupKey of activeKeys) {
       if (coupons.length >= target) break;
-      const groupPool = pool.filter((c) => c.targetDate === groupKey);
+      const groupPool = pool.filter((c) => inGroup(c, groupKey));
 
       for (let attempt = 0; attempt < STRATEGIES.length * 5; attempt++) {
         if (coupons.length >= target) break;
@@ -793,8 +831,8 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     },
   });
 
-  const groupKeys =
-    options.grouping === 'PER_DAY' ? options.window.days : [options.window.startDate];
+  const perDay = options.grouping === 'PER_DAY';
+  const groupKeys = perDay ? options.window.days : [options.window.startDate];
 
   /**
    * Build the master selection pool before anything is combined.
@@ -868,6 +906,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       weights,
       groupKeys,
       ledger,
+      perDay,
     );
 
     for (const [index, coupon] of coupons.entries()) {
@@ -929,6 +968,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
         focusOffset,
         {
           ledger,
+          perDay,
           settings,
           couponCount: group.couponCount,
           systemType: group.system.systemType,
@@ -944,7 +984,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       continue;
     }
 
-    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys, ledger);
+    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys, ledger, perDay);
 
     for (const [index, coupon] of built.coupons.entries()) {
       await persistCoupon(
@@ -983,7 +1023,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       groupKeys,
       sourceCategory as CouponCategory,
       couponsGenerated,
-      { ledger },
+      { ledger, perDay },
     );
     outcomes.push(systemOutcome.outcome);
     couponsGenerated += systemOutcome.produced;
@@ -1109,6 +1149,8 @@ async function generateSystemCoupons(
     strategyLabel?: string;
     /** Fixtures the rest of this publication has already spent. */
     ledger?: GenerationLedger;
+    /** False when a slate may draw across the whole coverage window. */
+    perDay?: boolean;
   } = {},
 ): Promise<{ outcome: CategoryOutcome; produced: number }> {
   const baseSystem = options.systemSettings;
@@ -1215,7 +1257,7 @@ async function generateSystemCoupons(
     if (produced >= system.couponCount) break;
 
     const dayPool = pool
-      .filter((c) => c.targetDate === groupKey)
+      .filter((c) => (override.perDay !== false ? c.targetDate === groupKey : true))
       .sort((a, b) => Number(b.expectedValue) - Number(a.expectedValue));
 
     for (let pass = 0; pass < attemptsPerDay; pass++) {
