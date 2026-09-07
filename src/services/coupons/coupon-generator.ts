@@ -1391,6 +1391,29 @@ async function generateSystemCoupons(
     }
 
     const totalOdds = base.reduce<Decimal>((product, c) => product.times(c.odds), dec(1));
+
+    /**
+     * The category's odds band applies to a system too.
+     *
+     * A system's headline number is the full parlay — what every leg landing
+     * would return — and the band was only ever checked on straight coupons, so
+     * a category asking for 500 was handed systems at 202 and 36. The same ten
+     * per cent tolerance applies, for the same reason: a near miss is not worth
+     * discarding a slate over.
+     */
+    const settingsForBand = settings;
+    if (settingsForBand) {
+      if (Number(totalOdds) < oddsFloor(settingsForBand)) {
+        outcome.shortfallReason = 'system_below_odds_floor';
+        continue;
+      }
+      const ceiling = oddsCeiling(settingsForBand);
+      if (ceiling !== null && Number(totalOdds) > ceiling) {
+        outcome.shortfallReason = 'system_above_odds_ceiling';
+        continue;
+      }
+    }
+
     // Ranking input only — see the note on legConfidence above.
     const legConfidence = base.reduce((sum, c) => sum + c.confidence, 0) / base.length;
     const risk = base.reduce((sum, c) => sum + c.risk, 0) / base.length;
