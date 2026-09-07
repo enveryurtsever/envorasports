@@ -18,7 +18,12 @@ import { syncFixturesForWindow } from '../ingestion/fixture-sync';
 import { syncBulletinForWindow } from '../ingestion/bulletin-sync';
 import { syncMatchResults } from '../ingestion/result-sync';
 import { importSeasons } from '../ingestion/historical-import';
-import { runSettlement, settleCoupons, settleSystemCoupons } from '../settlement/settlement-service';
+import {
+  runSettlement,
+  settleCoupons,
+  settlePendingPredictions,
+  settleSystemCoupons,
+} from '../settlement/settlement-service';
 import { rebuildEloRatings } from '../features/elo';
 import { runPredictions } from '../predictions/prediction-engine';
 import { generateCoupons } from '../coupons/coupon-generator';
@@ -397,11 +402,15 @@ export async function runSettlementSweep(): Promise<JobOutcome> {
     lockKey: 'settlement',
     lockTtlMs: 10 * 60 * 1000,
     handler: async () => {
+      // Predictions first: a coupon can only be graded once every leg it rests
+      // on has an outcome, and nothing else sweeps up the ones a result-sync
+      // transition did not cover.
+      const predictions = await settlePendingPredictions();
       const coupons = await settleCoupons();
       const systems = await settleSystemCoupons();
       return {
         itemsProcessed: coupons.coupons + systems.systems,
-        metadata: { coupons, systems },
+        metadata: { predictions, coupons, systems },
       };
     },
   });

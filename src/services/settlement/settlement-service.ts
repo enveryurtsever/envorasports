@@ -150,6 +150,46 @@ export async function settleMatchPredictions(matchId: string): Promise<number> {
  * Mirrors settled predictions onto the coupon selections that reference them,
  * then grades any coupon whose selections are all resolved.
  */
+/**
+ * Settles predictions for finished matches that nothing settled at the time.
+ *
+ * `settleMatchPredictions` only ever runs for matches that *transitioned* into
+ * a final state inside a result-sync run. Anything else was left behind: a
+ * prediction written after its match had already finished, a transition missed
+ * while the provider budget was spent, a re-run that replaced a settled
+ * generation with a fresh pending one. Those rows then sat PENDING forever, and
+ * the coupons resting on them could never be graded — which is exactly how a
+ * day of finished football produced eleven coupons stuck at 0/4.
+ *
+ * Bounded per run so a large backlog is worked through over several ticks
+ * rather than in one long transaction.
+ */
+export async function settlePendingPredictions(
+  options: { limit?: number } = {},
+): Promise<{ matches: number; predictions: number }> {
+  const matches = await prisma.match.findMany({
+    where: {
+      status: { in: ['FINISHED', 'AWARDED'] },
+      homeScore: { not: null },
+      awayScore: { not: null },
+      predictions: { some: { status: 'PENDING' } },
+    },
+    orderBy: { scheduledKickoffUtc: 'desc' },
+    take: options.limit ?? 200,
+    select: { id: true },
+  });
+
+  let predictions = 0;
+  for (const match of matches) {
+    predictions += await settleMatchPredictions(match.id);
+  }
+
+  if (predictions > 0) {
+    log.info('pending predictions swept', { matches: matches.length, predictions });
+  }
+  return { matches: matches.length, predictions };
+}
+
 export async function settleCoupons(): Promise<{ coupons: number; selections: number }> {
   const settlementVersion = await getAppSetting<number>('settlement.version', 1);
 

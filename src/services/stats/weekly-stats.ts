@@ -130,11 +130,17 @@ export async function getWeeklyStats(weekOffset = 0): Promise<WeeklyStats> {
         status: { in: ['FINISHED', 'AWARDED'] },
       },
     }),
-    // Selection-level accuracy: what did the model actually get right?
-    prisma.prediction.groupBy({
-      by: ['status'],
+    /**
+     * Accuracy over what was actually backed, not over everything eligible.
+     *
+     * This counted every `recommended` prediction — thousands of selections a
+     * week that no coupon ever carried. A reader judging the product by that
+     * number is judging a shortlist they were never shown; the coupon legs are
+     * the claims that were actually made.
+     */
+    prisma.couponSelection.groupBy({
+      by: ['resultStatus'],
       where: {
-        recommended: true,
         match: { scheduledKickoffUtc: { gte: week.startUtc, lt: week.endUtc } },
       },
       _count: true,
@@ -151,7 +157,7 @@ export async function getWeeklyStats(weekOffset = 0): Promise<WeeklyStats> {
   ]);
 
   const countByStatus = (status: string) =>
-    predictionGroups.find((g) => g.status === status)?._count ?? 0;
+    predictionGroups.find((g) => g.resultStatus === status)?._count ?? 0;
 
   const correct = countByStatus('WON') + countByStatus('HALF_WON');
   const incorrect = countByStatus('LOST') + countByStatus('HALF_LOST');

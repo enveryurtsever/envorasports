@@ -33,6 +33,12 @@ const KICKOFF_TOLERANCE_MS = 3 * 60 * 60 * 1000;
  * variant, and averaging hides exactly that case.
  */
 const MAPPING_THRESHOLD = 0.82;
+/**
+ * The bar for a name matched against every team in the database rather than
+ * one competition's. Near-exact only: at 0.82 across thousands of clubs the
+ * near-misses stop being spelling variants and start being different teams.
+ */
+const WIDE_MAPPING_THRESHOLD = 0.95;
 
 export interface DiscoveryResult {
   sportsScanned: number;
@@ -307,28 +313,55 @@ async function createMatchFromEvent(
 async function resolveKnownTeam(name: string, leagueId: string): Promise<string | null> {
   const normalized = normalizeTeamName(name);
 
-  const teams = await prisma.team.findMany({
+  const select = {
+    id: true,
+    name: true,
+    // Providers spell the same club differently; the alias table is where
+    // those spellings have already been reconciled.
+    aliases: { select: { alias: true, normalized: true } },
+  } as const;
+
+  const inCompetition = await prisma.team.findMany({
     where: { teamSeasons: { some: { season: { leagueId } } } },
-    select: {
-      id: true,
-      name: true,
-      // Providers spell the same club differently; the alias table is where
-      // those spellings have already been reconciled.
-      aliases: { select: { alias: true, normalized: true } },
-    },
+    select,
   });
 
-  let best: { id: string; score: number } | null = null;
-  for (const team of teams) {
-    const names = [team.name, ...team.aliases.map((alias) => alias.alias)];
-    const score = Math.max(
-      ...names.map((value) => similarity(normalized, normalizeTeamName(value))),
-      ...team.aliases.map((alias) => similarity(normalized, alias.normalized)),
-    );
-    if (!best || score > best.score) best = { id: team.id, score };
-  }
+  const rank = (teams: typeof inCompetition) => {
+    let best: { id: string; score: number } | null = null;
+    for (const team of teams) {
+      const names = [team.name, ...team.aliases.map((alias) => alias.alias)];
+      const score = Math.max(
+        ...names.map((value) => similarity(normalized, normalizeTeamName(value))),
+        ...team.aliases.map((alias) => similarity(normalized, alias.normalized)),
+      );
+      if (!best || score > best.score) best = { id: team.id, score };
+    }
+    return best;
+  };
 
-  return best && best.score >= MAPPING_THRESHOLD ? best.id : null;
+  // Inside the competition first: club names repeat across countries, and an
+  // unscoped match is how one club's history ends up behind another's
+  // prediction.
+  const scoped = rank(inCompetition);
+  if (scoped && scoped.score >= MAPPING_THRESHOLD) return scoped.id;
+
+  /**
+   * A cup has no squad of its own.
+   *
+   * A Champions League tie is played by sides whose only season link is
+   * domestic, so the scoped lookup finds nobody and eighteen discovered
+   * fixtures produce nothing. Scoping by "the competition has no teams yet"
+   * was worse than useless: the first fixture created linked two teams, and
+   * every later one was then matched against only those two.
+   *
+   * So the widening is driven by failure, not by emptiness — and the bar goes
+   * up with it, because a wider field is a wider chance of a wrong match.
+   * Genuinely unknown sides still fall through: LASK, Bodø/Glimt and Shakhtar
+   * score 0.27-0.43 against everything we hold, which is the answer we want.
+   */
+  const everyone = await prisma.team.findMany({ select });
+  const wide = rank(everyone);
+  return wide && wide.score >= WIDE_MAPPING_THRESHOLD ? wide.id : null;
 }
 
 interface MappingCandidate {

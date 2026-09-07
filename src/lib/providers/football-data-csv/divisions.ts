@@ -26,6 +26,11 @@ export interface CsvDivision {
 export const CSV_DIVISIONS: CsvDivision[] = [
   { code: 'E0', name: 'Premier League', country: 'England', oddsApiKey: 'soccer_epl', tier: 1 },
   { code: 'E1', name: 'Championship', country: 'England', oddsApiKey: 'soccer_efl_champ', tier: 2 },
+  // The lower two English divisions carry a full CSV archive, so their history
+  // costs nothing to backfill — unlike the leagues the odds provider also
+  // carries but this archive does not.
+  { code: 'E2', name: 'League One', country: 'England', oddsApiKey: 'soccer_england_league1', tier: 3 },
+  { code: 'E3', name: 'League Two', country: 'England', oddsApiKey: 'soccer_england_league2', tier: 4 },
   { code: 'SP1', name: 'La Liga', country: 'Spain', oddsApiKey: 'soccer_spain_la_liga', tier: 1 },
   { code: 'SP2', name: 'La Liga 2', country: 'Spain', oddsApiKey: 'soccer_spain_segunda_division', tier: 2, apiFootballName: 'Segunda División' },
   { code: 'D1', name: 'Bundesliga', country: 'Germany', oddsApiKey: 'soccer_germany_bundesliga', tier: 1 },
