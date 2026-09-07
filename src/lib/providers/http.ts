@@ -25,6 +25,13 @@ export interface BodyVerdict {
   message?: string;
   /** The provider is refusing work because the budget is spent. */
   budgetExhausted?: boolean;
+  /**
+   * The provider is refusing work for this minute only.
+   *
+   * Retryable, and never evidence about the day's allowance — the caller must
+   * be able to tell "wait ten seconds" apart from "come back tomorrow".
+   */
+  rateLimited?: boolean;
 }
 
 export interface HttpClientOptions {
@@ -33,6 +40,14 @@ export interface HttpClientOptions {
   headers?: Record<string, string>;
   /** Provider's per-minute cap, paced client-side rather than discovered by 429. */
   requestsPerMinute?: number;
+  /**
+   * Which allowance this client's pacing draws on. Defaults to `provider`.
+   *
+   * The cap belongs to the API key, not to the object holding it. Fixtures and
+   * odds are two clients over one API-Football key, and each pacing itself at
+   * ten a minute put twenty a minute on a key that allows ten.
+   */
+  paceKey?: string;
   timeoutMs?: number;
   maxRetries?: number;
   quota?: QuotaPolicy;
@@ -104,6 +119,38 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Request timestamps and the reservation queue, per allowance rather than per
+ * client — see `HttpClientOptions.paceKey`.
+ */
+const paceWindows = new Map<string, number[]>();
+const paceQueues = new Map<string, Promise<void>>();
+
+async function reserveSlot(key: string, limit: number): Promise<void> {
+  let window = paceWindows.get(key);
+  if (!window) {
+    window = [];
+    paceWindows.set(key, window);
+  }
+
+  for (;;) {
+    const cutoff = Date.now() - 60_000;
+    while (window.length > 0 && (window[0] as number) <= cutoff) window.shift();
+    if (window.length < limit) break;
+
+    const oldest = window[0] as number;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(250, oldest - cutoff)));
+  }
+
+  window.push(Date.now());
+}
+
+/** Test seam: forget what has been spent so a suite starts from a clean minute. */
+export function resetPacing(): void {
+  paceWindows.clear();
+  paceQueues.clear();
+}
+
+/**
  * Full jitter exponential backoff. Without jitter, every worker that hit a 429
  * retries at the same instant and hits it again.
  */
@@ -125,8 +172,10 @@ export class HttpClient {
   private readonly maxRetries: number;
   /** Latest credit balance the provider reported, if it reports one at all. */
   private lastQuotaRemaining: number | null = null;
-  /** Send times of recent requests, for the per-minute pace. */
-  private readonly recentRequests: number[] = [];
+  /** The allowance this client paces against, shared by every client on it. */
+  private get paceKey(): string {
+    return this.options.paceKey ?? this.options.provider;
+  }
 
   constructor(private readonly options: HttpClientOptions) {
     this.timeoutMs = options.timeoutMs ?? 15_000;
@@ -147,18 +196,18 @@ export class HttpClient {
     const limit = this.options.requestsPerMinute;
     if (!limit) return;
 
-    for (;;) {
-      const cutoff = Date.now() - 60_000;
-      while (this.recentRequests.length > 0 && (this.recentRequests[0] as number) <= cutoff) {
-        this.recentRequests.shift();
-      }
-      if (this.recentRequests.length < limit) break;
-
-      const oldest = this.recentRequests[0] as number;
-      await new Promise((resolve) => setTimeout(resolve, Math.max(250, oldest - cutoff)));
-    }
-
-    this.recentRequests.push(Date.now());
+    const key = this.paceKey;
+    // Reserving a slot has to be one indivisible step across every client on
+    // this key: two callers that both read the window before either writes to
+    // it will both decide there is room, which is the race the shared window
+    // exists to close.
+    const previous = paceQueues.get(key) ?? Promise.resolve();
+    const reservation = previous.then(() => reserveSlot(key, limit));
+    paceQueues.set(
+      key,
+      reservation.catch(() => undefined),
+    );
+    await reservation;
   }
 
   async get<T>(request: RequestOptions): Promise<T> {
@@ -277,6 +326,26 @@ export class HttpClient {
             errorMessage: verdict.message ?? 'provider reported an error',
           });
 
+          /**
+           * A spent minute is not a failure, it is a queue.
+           *
+           * Pacing should keep us clear of it, but a restart empties the
+           * window while the provider's own minute keeps running, so the first
+           * calls after one can still land on it. Waiting out the minute costs
+           * a few seconds; throwing costs a whole date's results.
+           */
+          if (verdict.rateLimited && attempt < this.maxRetries) {
+            if (this.options.quota) await clearQuotaExhaustion(this.options.quota);
+            const retryAfter = Number(response.headers.get('retry-after'));
+            await sleep(
+              Number.isFinite(retryAfter) && retryAfter > 0
+                ? Math.min(retryAfter * 1000, 60_000)
+                : 15_000,
+            );
+            await this.awaitPace();
+            continue;
+          }
+
           if (this.options.quota) {
             if (verdict.budgetExhausted) {
               this.lastQuotaRemaining = 0;
@@ -302,8 +371,9 @@ export class HttpClient {
               provider: this.options.provider,
               endpoint: request.path,
               statusCode: response.status,
-              // Retrying an exhausted budget is how the loop started.
-              retryable: false,
+              // Retrying an exhausted budget is how the loop started. A spent
+              // minute is the one refusal that is worth another attempt.
+              retryable: verdict.rateLimited === true,
             },
           );
         }

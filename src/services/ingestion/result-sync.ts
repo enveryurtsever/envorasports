@@ -68,7 +68,11 @@ function isPreflightFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return (
     error.name === 'QuotaExceededError' ||
-    /budget exhausted|do not have access|not available for your plan/i.test(error.message)
+    /budget exhausted|do not have access|not available for your plan/i.test(error.message) ||
+    // A spent per-minute burst says nothing about the fixture. Counting it as
+    // an attempt let two jobs ticking in the same minute burn a match's
+    // allowance until it could never be settled at all.
+    /rate limit is \d+ requests per minute|too many requests/i.test(error.message)
   );
 }
 

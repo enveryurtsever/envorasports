@@ -16,6 +16,16 @@ import type { BodyVerdict } from '../http';
  * fine. Only the body tells the truth, so the body is what decides.
  */
 
+/**
+ * Phrases the free plan uses when the *per-minute* burst is gone.
+ *
+ * A different thing entirely from a spent day: the allowance is intact and the
+ * only correct response is to wait a moment and ask again. Reading it as a
+ * plain failure cost a whole date's results every time two jobs happened to
+ * tick in the same minute.
+ */
+const RATE_LIMIT_PATTERNS = [/rate limit is \d+ requests per minute/i, /too many requests/i];
+
 /** Phrases API-Football uses when the daily allowance is gone. */
 const BUDGET_PATTERNS = [
   /request limit for the day/i,
@@ -36,9 +46,14 @@ export function interpretApiFootballBody(body: unknown): BodyVerdict {
   if (entries.length === 0) return { ok: true };
 
   const message = entries.join('; ');
+  const budgetExhausted = BUDGET_PATTERNS.some((pattern) => pattern.test(message));
+
   return {
     ok: false,
     message,
-    budgetExhausted: BUDGET_PATTERNS.some((pattern) => pattern.test(message)),
+    budgetExhausted,
+    // A spent day wins the tie: it is the more restrictive reading, and the
+    // two phrasings overlap ("reached the request limit").
+    rateLimited: !budgetExhausted && RATE_LIMIT_PATTERNS.some((p) => p.test(message)),
   };
 }

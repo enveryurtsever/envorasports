@@ -437,6 +437,10 @@ export function createApiFootballOddsProvider(config: {
     headers: { 'x-apisports-key': config.apiKey },
     // Free plan: ten a minute, shared with the fixture client's allowance.
     requestsPerMinute: 10,
+    // One API key, one allowance: named explicitly so this stays paced
+    // together with the fixtures client even if either provider string is
+    // renamed later.
+    paceKey: 'api-football',
     /**
      * The omission that cost the budget.
      *
