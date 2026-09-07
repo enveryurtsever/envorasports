@@ -26,7 +26,7 @@ const prisma = new PrismaClient();
  * to this one.
  */
 const CONFIGURATION = {
-  configVersion: '2026-09-06.1',
+  configVersion: '2026-09-07.1',
   weights: { poisson: 0.5, elo: 0.25, form: 0.25, xg: 0 },
   elo: { kFactor: 20, homeAdvantage: 65, initialRating: 1500, marginWeight: 0.5 },
   poisson: { maxGoals: 10, shrinkage: 0.25, homeAdvantage: 1.12 },
@@ -49,6 +49,11 @@ const CONFIGURATION = {
     xg: 'disabled: no expected-goals data in any source as of 2026-09-06',
     poissonInput:
       'attack/defence now read the away side from the away team (fixed 2026-09-06)',
+    leagueStrength:
+      'Elo ratings are offset by League.strengthOffset on cross-league ties only. ' +
+      'The offsets are a judgement, not a fit: every league is a closed pool around ' +
+      '1500, so the ratings themselves carry nothing about how the pools compare. ' +
+      'Refit from graded European ties once enough exist.',
   },
 } satisfies Prisma.InputJsonObject;
 

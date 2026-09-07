@@ -271,6 +271,14 @@ export interface MatchPredictionInput {
   homeTeamId: string;
   awayTeamId: string;
   leagueDataQuality: number;
+  /**
+   * Elo points each side's home league sits above a neutral baseline.
+   *
+   * Null for a domestic tie, where both sides come from the same pool and the
+   * adjustment would cancel. See `League.strengthOffset`.
+   */
+  homeLeagueStrength?: number;
+  awayLeagueStrength?: number;
 }
 
 export interface MatchPrediction {
@@ -288,6 +296,8 @@ export interface MatchPrediction {
   awayForm: TeamFormBundle;
   eloKnown: boolean;
   hasXg: boolean;
+  /** The cross-league rating adjustment, so a surprising number is traceable. */
+  leagueStrength: { applied: boolean; home: number; away: number };
 }
 
 export interface ModelConfiguration {
@@ -373,10 +383,32 @@ export async function computeMatchPrediction(
   const awayElo = elo.get(match.awayTeamId)!;
   const strengths = buildAttackDefence(homeForm, awayForm, leagueAverages);
 
+  /**
+   * Cross-league ratings have to be put on the same scale first.
+   *
+   * Elo starts everyone at 1500 and teams only play inside their own league,
+   * so each league is a closed pool orbiting that number: the Premier League
+   * averages 1533 here and the Belgian first division 1492. A European tie
+   * between a dominant side from a weak league and a mid-table side from a
+   * strong one is then read backwards — Club Brugge came out at 60.5% against
+   * Aston Villa where twenty-two bookmakers said 35.5%.
+   *
+   * The offsets are a judgement rather than a measurement, so they are applied
+   * only where they are needed: a domestic tie has both sides in one pool and
+   * nothing is added at all.
+   */
+  const crossLeague =
+    match.homeLeagueStrength !== undefined &&
+    match.awayLeagueStrength !== undefined &&
+    match.homeLeagueStrength !== match.awayLeagueStrength;
+
+  const homeStrength = crossLeague ? (match.homeLeagueStrength as number) : 0;
+  const awayStrength = crossLeague ? (match.awayLeagueStrength as number) : 0;
+
   const models: ModelOutput[] = [
     runEloModel({
-      homeRating: homeElo.rating,
-      awayRating: awayElo.rating,
+      homeRating: homeElo.rating + homeStrength,
+      awayRating: awayElo.rating + awayStrength,
       homeMatchesPlayed: homeElo.matchesPlayed,
       awayMatchesPlayed: awayElo.matchesPlayed,
       homeAdvantage: config.elo.homeAdvantage,
@@ -417,6 +449,7 @@ export async function computeMatchPrediction(
     awayForm,
     eloKnown: homeElo.known && awayElo.known,
     hasXg: models.some((m) => m.name === 'xg' && m.available),
+    leagueStrength: { applied: crossLeague, home: homeStrength, away: awayStrength },
   };
 }
 
@@ -449,6 +482,36 @@ export async function runPredictions(
   ]);
 
   const excluded = new Set(excludedMarkets);
+
+  /**
+   * Each team's home league, and the offset that goes with it.
+   *
+   * A cup fixture belongs to the cup, but a team's rating was earned in the
+   * league it actually plays in — so the offset is looked up per team, from
+   * wherever it has played most, not from the competition the tie is in.
+   */
+  const teamLeagueStrength = new Map<string, number>();
+  const teamLeagueCounts = await prisma.match.groupBy({
+    by: ['leagueId', 'homeTeamId'],
+    where: { status: { in: ['FINISHED', 'AWARDED'] } },
+    _count: true,
+  });
+  const leagueOffsets = new Map(
+    (await prisma.league.findMany({ select: { id: true, strengthOffset: true } })).map((l) => [
+      l.id,
+      l.strengthOffset,
+    ]),
+  );
+  const bestLeague = new Map<string, { leagueId: string; count: number }>();
+  for (const row of teamLeagueCounts) {
+    const current = bestLeague.get(row.homeTeamId);
+    if (!current || row._count > current.count) {
+      bestLeague.set(row.homeTeamId, { leagueId: row.leagueId, count: row._count });
+    }
+  }
+  for (const [teamId, entry] of bestLeague) {
+    teamLeagueStrength.set(teamId, leagueOffsets.get(entry.leagueId) ?? 0);
+  }
 
   const matches = await prisma.match.findMany({
     where: {
@@ -540,6 +603,8 @@ export async function runPredictions(
         homeTeamId: match.homeTeamId,
         awayTeamId: match.awayTeamId,
         leagueDataQuality: Number(match.league.dataQuality),
+        homeLeagueStrength: teamLeagueStrength.get(match.homeTeamId),
+        awayLeagueStrength: teamLeagueStrength.get(match.awayTeamId),
       },
       asOf,
       config,
@@ -702,6 +767,7 @@ export async function runPredictions(
           redistributedWeight: Number(ensemble.redistributedWeight.toFixed(4)),
           perModelResult: ensemble.perModel,
           modelConfigVersion: config.configVersion,
+          leagueStrength: prediction.leagueStrength,
           calibration: {
             marketPriorWeight: config.marketPriorWeight,
             groupsCalibrated: calibrated.calibratedGroups.length,

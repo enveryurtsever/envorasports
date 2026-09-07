@@ -201,29 +201,43 @@ model Translation {
 // ===========================================================================
 
 model League {
-  id            String   @id @default(cuid())
-  externalId    String   @map("external_id")
+  id            String  @id @default(cuid())
+  externalId    String  @map("external_id")
   source        String
   name          String
   country       String?
-  countryCode   String?  @map("country_code")
+  countryCode   String? @map("country_code")
   type          String? // "League" | "Cup" | ...
   logo          String?
   tier          Int?
   /// The Odds API competition key, e.g. "soccer_epl". Null = not priced there.
-  oddsApiKey    String?  @map("odds_api_key")
+  oddsApiKey    String? @map("odds_api_key")
   /// API-Football league id, resolved once against /leagues and cached. Only
   /// mapped leagues are ingested, which keeps a whole day's fixtures to one
   /// request instead of one per competition.
-  apiFootballId Int?     @unique @map("api_football_id")
+  apiFootballId Int?    @unique @map("api_football_id")
   /// football-data.co.uk division code, e.g. "E0". Null = no historical CSV.
-  csvDivision   String?  @map("csv_division")
+  csvDivision   String? @map("csv_division")
   /// 0..1 — feeds the data-quality score (§44).
-  dataQuality   Decimal  @default(0.5) @map("data_quality") @db.Decimal(4, 3)
-  active        Boolean  @default(true)
-  fetchedAt     DateTime @default(now()) @map("fetched_at")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  dataQuality   Decimal @default(0.5) @map("data_quality") @db.Decimal(4, 3)
+
+  /// Elo points this competition's ratings sit above a neutral baseline.
+  ///
+  /// Elo starts every team at 1500 and teams only play inside their own
+  /// league, so each league is a closed pool orbiting 1500: measured here, the
+  /// Premier League averages 1533 and the Belgian first division 1492, a gap
+  /// of forty points for a difference that is plainly far larger. Ratings are
+  /// therefore not comparable across competitions, and a European tie between
+  /// a dominant side from a weak league and a mid-table side from a strong one
+  /// is read backwards.
+  ///
+  /// The offset is added to a team's rating only when its opponent comes from
+  /// a different league. Within a league it cancels and changes nothing.
+  strengthOffset Int      @default(0) @map("strength_offset")
+  active         Boolean  @default(true)
+  fetchedAt      DateTime @default(now()) @map("fetched_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   seasons    Season[]
   matches    Match[]
