@@ -277,9 +277,23 @@ export class HttpClient {
             errorMessage: verdict.message ?? 'provider reported an error',
           });
 
-          if (verdict.budgetExhausted && this.options.quota) {
-            this.lastQuotaRemaining = 0;
-            await markQuotaExhausted(this.options.quota, verdict.message ?? 'budget exhausted');
+          if (this.options.quota) {
+            if (verdict.budgetExhausted) {
+              this.lastQuotaRemaining = 0;
+              await markQuotaExhausted(this.options.quota, verdict.message ?? 'budget exhausted');
+            } else {
+              /**
+               * Any answer that is not a budget refusal proves the budget is
+               * fine.
+               *
+               * A plan restriction — "Free plans do not have access to this
+               * date" — is the provider serving us and declining the argument.
+               * Treating it as no evidence left a hold in place that had been
+               * set at 00:00:19, seconds before the provider's own window
+               * rolled, and it would have stood for the whole day.
+               */
+              await clearQuotaExhaustion(this.options.quota);
+            }
           }
 
           throw new ProviderError(

@@ -158,7 +158,28 @@ export async function markQuotaExhausted(
   now = new Date(),
 ): Promise<void> {
   const { start, end } = windowBounds(policy.window, now);
-  const resetAt = defaultResetAt(policy.window, now);
+
+  /**
+   * A refusal arriving just after our window rolls is about the window before.
+   *
+   * Ours turns at UTC midnight; the provider's turns on its own schedule. A
+   * "limit reached" at 00:00:19 was answered on the old day's ledger, and
+   * holding until the *new* window ends locked out a full day on the strength
+   * of it — 92 requests went unused while eight probes bounced off a plan
+   * restriction. When almost nothing has been spent in the current window, the
+   * hold lasts one probe interval instead: long enough not to hammer a
+   * genuinely spent account, short enough to correct itself.
+   */
+  const spent = await prisma.providerRequestLog.aggregate({
+    where: { provider: policy.provider, createdAt: { gte: start, lt: end } },
+    _sum: { cost: true },
+  });
+  const consumed = spent._sum.cost ?? 0;
+  const looksLikePreviousWindow = consumed < policy.budget * 0.1;
+
+  const resetAt = looksLikePreviousWindow
+    ? new Date(now.getTime() + DEFAULT_PROBE_INTERVAL_MINUTES * 60_000)
+    : defaultResetAt(policy.window, now);
 
   await prisma.providerQuotaState.upsert({
     where: { provider: policy.provider },
@@ -189,6 +210,10 @@ export async function markQuotaExhausted(
     provider: policy.provider,
     reason,
     resetAt: resetAt.toISOString(),
+    consumedThisWindow: consumed,
+    // Says which of the two holds was applied, so a stuck provider can be
+    // diagnosed from the log rather than from the database.
+    attributedTo: looksLikePreviousWindow ? 'previous-window' : 'current-window',
   });
 }
 

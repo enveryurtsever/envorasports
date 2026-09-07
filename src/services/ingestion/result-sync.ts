@@ -164,9 +164,27 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
    * costs one request whatever it holds, and the fixtures we did not ask about
    * are simply dropped from the answer.
    */
+  /**
+   * Newest first, and only dates the plan will serve.
+   *
+   * The Free plan answers a date outside a narrow window around today with
+   * "Free plans do not have access to this date, try from X to Y". Asked
+   * oldest-first, every probe a held budget allowed was spent on a date that
+   * could never be served, and today's results — which the plan does allow —
+   * were never reached. Older dates fall through to the per-fixture path,
+   * which has no such restriction.
+   */
+  const PLAN_DATE_RADIUS_DAYS = 1;
+  const earliest = new Date(now.getTime() - PLAN_DATE_RADIUS_DAYS * 864e5)
+    .toISOString()
+    .slice(0, 10);
+
   const dateKeys = [
     ...new Set(due.map((match) => match.scheduledKickoffUtc.toISOString().slice(0, 10))),
-  ].sort();
+  ]
+    .filter((key) => key >= earliest)
+    .sort()
+    .reverse();
 
   if (provider.getFixturesByDate && dateKeys.length > 0 && dateKeys.length < due.length) {
     for (const dateKey of dateKeys) {
