@@ -223,6 +223,19 @@ export function filterForCategory(
   });
 }
 
+/**
+ * Mean probability of a coupon's legs — the figure shown as "tahmin gücü".
+ *
+ * Not the chance the coupon lands: three legs at 75% average 75% and come in
+ * 42% of the time. The two answer different questions and are kept apart
+ * everywhere they appear.
+ */
+function legStrength(coupon: BuiltCoupon): number {
+  if (coupon.selections.length === 0) return 0;
+  const total = coupon.selections.reduce((sum, s) => sum + Number(s.probability), 0);
+  return total / coupon.selections.length;
+}
+
 /** Columns a system of these sizes over this many legs will produce. */
 function plannedColumns(sizes: number[], legs: number): number {
   return sizes.reduce((total, k) => total + Number(combinationCount(legs, k)), 0);
@@ -702,14 +715,20 @@ export function buildCategoryCoupons(
   }
 
   /**
-   * Rank by the chance the coupon lands and keep the best.
+   * Rank by the strength of the legs, not by the product of them.
    *
    * The strategies produce coupons in the order they were tried, which is an
-   * artefact of the ranking function rather than a judgement. What a reader
-   * should be shown first is the one most likely to come in, so the slate is
-   * built past the requested count and then cut down to the likeliest.
+   * artefact of the ranking function rather than a judgement, so the slate is
+   * built past the requested count and then cut down.
+   *
+   * Cutting on the coupon's own chance sounds right and is not: that number
+   * falls with every leg added, so a two-leg coupon of 65% picks outranks a
+   * five-leg coupon of 80% picks purely for being shorter. The category is
+   * asked for four to six legs, and ranking that way quietly fought it.
+   * Average leg strength is what the card leads with and what the reader is
+   * comparing, and it does not move with the count.
    */
-  coupons.sort((a, b) => Number(b.estimatedProbability) - Number(a.estimatedProbability));
+  coupons.sort((a, b) => legStrength(b) - legStrength(a));
 
   /**
    * Take the likeliest coupons that do not repeat a fixture.
