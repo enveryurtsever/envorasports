@@ -60,6 +60,18 @@ export interface PredictionRunResult {
  */
 export const DEFAULT_ODDS_MAX_AGE_MINUTES = 360;
 
+/**
+ * Markets no coupon can offer, so no prediction is written for them.
+ *
+ * Asian handicap was 438 of the 1,526 live predictions — the single largest
+ * market in the table — for selections the coupon builder filters out before it
+ * ever looks at them. The model still computes the whole joint distribution;
+ * this only stops the unusable slice being stored, priced and swept on every
+ * run. Configurable, because a market coming back into the product should not
+ * need a deploy.
+ */
+export const DEFAULT_EXCLUDED_MARKETS = ['ASIAN_HANDICAP'] as const;
+
 interface BestPrice {
   price: Decimal;
   bookmakerId: string;
@@ -352,7 +364,7 @@ export async function runPredictions(
 
   const config = readModelConfiguration(modelVersion.configuration);
 
-  const [minEdge, minEv, minProbability, oddsMaxAgeMinutes] = await Promise.all([
+  const [minEdge, minEv, minProbability, oddsMaxAgeMinutes, excludedMarkets] = await Promise.all([
     getAppSetting<number>('prediction.minEdge', 0.02),
     getAppSetting<number>('prediction.minExpectedValue', 0.02),
     /**
@@ -364,7 +376,10 @@ export async function runPredictions(
      */
     getAppSetting<number>('prediction.minProbability', 0.25),
     getAppSetting<number>('prediction.oddsMaxAgeMinutes', DEFAULT_ODDS_MAX_AGE_MINUTES),
+    getAppSetting<string[]>('prediction.excludedMarkets', [...DEFAULT_EXCLUDED_MARKETS]),
   ]);
+
+  const excluded = new Set(excludedMarkets);
 
   const matches = await prisma.match.findMany({
     where: {
@@ -511,6 +526,9 @@ export async function runPredictions(
     const rows: Prisma.PredictionCreateManyInput[] = [];
 
     for (const [selectionCode, price] of prices) {
+      // A market nothing downstream can offer is not worth a stored row.
+      if (excluded.has(price.marketCode)) continue;
+
       const probability = calibrated.probabilities.get(selectionCode);
       // No model view on this market: nothing is invented to fill the gap.
       if (!probability || probability.lessThanOrEqualTo(0)) continue;

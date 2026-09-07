@@ -16,7 +16,7 @@ import { discoverFixtures } from '@/services/ingestion/fixture-discovery';
 import { syncBulkOdds } from '@/services/ingestion/bulk-odds-sync';
 import { syncFixturesForWindow } from '../ingestion/fixture-sync';
 import { syncBulletinForWindow } from '../ingestion/bulletin-sync';
-import { syncMatchResults } from '../ingestion/result-sync';
+import { reconcileDiscoveredFixtures, syncMatchResults } from '../ingestion/result-sync';
 import { importSeasons } from '../ingestion/historical-import';
 import {
   runSettlement,
@@ -374,6 +374,13 @@ export async function runResultSync(): Promise<JobOutcome> {
     lockKey: 'result-sync',
     lockTtlMs: 10 * 60 * 1000,
     handler: async ({ logger }) => {
+      // Fixtures created from odds events cannot be settled until they carry
+      // this provider's id. The date fetch below pays for itself either way.
+      const reconciled = await reconcileDiscoveredFixtures();
+      if (reconciled.reconciled > 0) {
+        logger.info('discovered fixtures reconciled', { ...reconciled });
+      }
+
       const results = await syncMatchResults();
 
       let settlement = { predictionsSettled: 0, couponsSettled: 0, systemCouponsSettled: 0, columnsSettled: 0 };
@@ -385,7 +392,7 @@ export async function runResultSync(): Promise<JobOutcome> {
       return {
         itemsProcessed: results.checked,
         itemsFailed: 0,
-        metadata: { ...results, finishedMatchIds: undefined, settlement },
+        metadata: { ...results, finishedMatchIds: undefined, reconciled, settlement },
       };
     },
   });

@@ -3,6 +3,7 @@ import { createLogger } from '@/lib/logging/logger';
 import { getFootballProvider } from '@/lib/providers';
 import type { ProviderFixture } from '@/lib/providers/types';
 import { getAppSetting } from '@/lib/config/settings-service';
+import { normalizeTeamName, similarity } from './team-resolver';
 
 const log = createLogger('ingestion:results');
 
@@ -92,6 +93,121 @@ export interface ResultSyncResult {
   finished: number;
   finishedMatchIds: string[];
   requestsSpent: number;
+}
+
+/**
+ * Ties fixtures created from odds events to the football provider's own.
+ *
+ * Discovery creates fixtures the fixture provider's plan has not served yet, so
+ * they carry an odds-event id and nothing this provider recognises. They can be
+ * priced and predicted, but never settled — eighteen of Sunday's matches sat
+ * SCHEDULED after the whole day had been played, with coupons resting on them.
+ *
+ * The date fetch already pulls every fixture on a day for one request, so the
+ * reconciliation is free: whatever comes back is matched on team names and
+ * kickoff, and the fixture inherits the provider's id. From then on it settles
+ * like any other.
+ */
+export async function reconcileDiscoveredFixtures(
+  now: Date = new Date(),
+  options: { horizonDays?: number } = {},
+): Promise<{ candidates: number; reconciled: number; requestsSpent: number }> {
+  const provider = getFootballProvider();
+  const result = { candidates: 0, reconciled: 0, requestsSpent: 0 };
+  if (!provider.getFixturesByDate) return result;
+
+  const horizonDays = options.horizonDays ?? 1;
+
+  const orphans = await prisma.match.findMany({
+    where: {
+      source: { not: provider.name },
+      status: { in: [...OPEN_STATUSES] },
+      // Only dates the plan will serve; older ones can never be reconciled
+      // this way and are left for a manual import.
+      scheduledKickoffUtc: {
+        gte: new Date(now.getTime() - horizonDays * 864e5),
+        lte: new Date(now.getTime() + horizonDays * 864e5),
+      },
+    },
+    select: {
+      id: true,
+      scheduledKickoffUtc: true,
+      homeTeam: { select: { name: true } },
+      awayTeam: { select: { name: true } },
+    },
+  });
+  result.candidates = orphans.length;
+  if (orphans.length === 0) return result;
+
+  const dates = [
+    ...new Set(orphans.map((m) => m.scheduledKickoffUtc.toISOString().slice(0, 10))),
+  ].sort().reverse();
+
+  for (const dateKey of dates) {
+    let fixtures: ProviderFixture[];
+    try {
+      fixtures = await provider.getFixturesByDate(new Date(`${dateKey}T00:00:00.000Z`));
+      result.requestsSpent++;
+    } catch (error) {
+      log.warn('reconciliation date fetch failed', { date: dateKey, error: String(error) });
+      continue;
+    }
+
+    for (const orphan of orphans) {
+      if (orphan.scheduledKickoffUtc.toISOString().slice(0, 10) !== dateKey) continue;
+
+      const home = normalizeTeamName(orphan.homeTeam.name);
+      const away = normalizeTeamName(orphan.awayTeam.name);
+
+      let best: { fixture: ProviderFixture; score: number } | null = null;
+      for (const fixture of fixtures) {
+        // Two hours of drift: kickoffs move, and the two providers do not
+        // always agree on the minute.
+        if (
+          Math.abs(fixture.kickoffUtc.getTime() - orphan.scheduledKickoffUtc.getTime()) >
+          2 * 3600 * 1000
+        ) {
+          continue;
+        }
+
+        const score = Math.min(
+          similarity(home, normalizeTeamName(fixture.homeTeamName)),
+          similarity(away, normalizeTeamName(fixture.awayTeamName)),
+        );
+        if (!best || score > best.score) best = { fixture, score };
+      }
+
+      // Near-exact only. A wrong join here writes another match's score onto
+      // this one, and every coupon resting on it settles against a fiction.
+      if (!best || best.score < 0.9) continue;
+
+      // The provider's id may already belong to a fixture we hold, in which
+      // case this one is a duplicate of it rather than a new fixture.
+      const clash = await prisma.match.findFirst({
+        where: { source: provider.name, externalId: best.fixture.externalId },
+        select: { id: true },
+      });
+      if (clash) continue;
+
+      await prisma.match.update({
+        where: { id: orphan.id },
+        data: {
+          source: provider.name,
+          externalId: best.fixture.externalId,
+          // A fresh identity deserves a fresh allowance: the attempts it
+          // accrued were against an id this provider never recognised.
+          resultSyncAttempts: 0,
+          resultLastSyncedAt: null,
+        },
+      });
+      result.reconciled++;
+    }
+  }
+
+  if (result.reconciled > 0) {
+    log.info('discovered fixtures reconciled', { ...result });
+  }
+  return result;
 }
 
 export async function syncMatchResults(now: Date = new Date()): Promise<ResultSyncResult> {
