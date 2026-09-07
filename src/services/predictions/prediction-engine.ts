@@ -5,7 +5,7 @@ import { Decimal, clampProbability, dec } from '@/lib/math/decimal';
 import { edge as computeEdge, expectedValue, impliedProbability } from '@/lib/math/probability';
 import { DEFAULT_MODEL_WEIGHTS, type ModelWeights } from '@/lib/config/coupon-settings';
 import { getAppSetting } from '@/lib/config/settings-service';
-import { getEloForTeams, DEFAULT_ELO_CONFIG } from '@/services/features/elo';
+import { getEloForTeams, expectedScore, DEFAULT_ELO_CONFIG } from '@/services/features/elo';
 import { getLeagueAverages, getTeamForm, persistFormSnapshot, type TeamFormBundle } from '@/services/features/form';
 import { runEloModel } from '@/lib/models/elo-model';
 import { runPoissonModel } from '@/lib/models/poisson-model';
@@ -248,20 +248,58 @@ export function dataQualityScore(input: {
  * form bundle. Both sides must come from their own team: reading them off one
  * bundle leaves the opponent out of the Poisson model entirely.
  */
+/**
+ * How much a side's scoring travels when it changes standard of opposition.
+ *
+ * Derived from the same Elo scale the offsets are stated on rather than a new
+ * invented constant: a team `d` points worse than its opponent's league has an
+ * Elo expectation of 1/(1+10^(d/400)), and the ratio of that to an even 0.5 is
+ * the factor. A hundred-point gap gives 0.72 — a side moving up scores about
+ * three quarters of what it did, and concedes proportionally more.
+ *
+ * Equal leagues give exactly 1, so a domestic tie is untouched.
+ */
+export function leagueTravelFactor(ownOffset: number, opponentOffset: number): number {
+  return expectedScore(ownOffset, opponentOffset) / 0.5;
+}
+
 function buildAttackDefence(
   homeForm: TeamFormBundle,
   awayForm: TeamFormBundle,
   league: { homeGoals: number; awayGoals: number },
+  /**
+   * Each side's own league baseline and strength.
+   *
+   * Attack and defence are ratios against a baseline, and for a cup tie the
+   * fixture's own league has none — it falls back to a global average, so
+   * Brugge's 2.7 goals a game were being read against 1.5 whoever they played.
+   * A ratio only means something against the baseline it was earned in, and it
+   * only transfers to a different standard after being discounted for it.
+   */
+  cross?: {
+    homeLeague: { homeGoals: number; awayGoals: number };
+    awayLeague: { homeGoals: number; awayGoals: number };
+    homeFactor: number;
+    awayFactor: number;
+  },
 ) {
   // Fall back to overall form when a side has barely played at this venue.
   const home = homeForm.home.sampleSize >= 3 ? homeForm.home : homeForm.windows.LAST_10;
   const away = awayForm.away.sampleSize >= 3 ? awayForm.away : awayForm.windows.LAST_10;
 
+  const homeBase = cross?.homeLeague ?? league;
+  const awayBase = cross?.awayLeague ?? league;
+  const homeFactor = cross?.homeFactor ?? 1;
+  const awayFactor = cross?.awayFactor ?? 1;
+
+  const ratio = (value: number, baseline: number) => (baseline > 0 ? value / baseline : 1);
+
   return {
-    homeAttack: league.homeGoals > 0 ? home.averageGoalsFor / league.homeGoals : 1,
-    homeDefence: league.awayGoals > 0 ? home.averageGoalsAgainst / league.awayGoals : 1,
-    awayAttack: league.awayGoals > 0 ? away.averageGoalsFor / league.awayGoals : 1,
-    awayDefence: league.homeGoals > 0 ? away.averageGoalsAgainst / league.homeGoals : 1,
+    // Stronger opposition: score less of what you scored, concede more.
+    homeAttack: ratio(home.averageGoalsFor, homeBase.homeGoals) * homeFactor,
+    homeDefence: ratio(home.averageGoalsAgainst, homeBase.awayGoals) / homeFactor,
+    awayAttack: ratio(away.averageGoalsFor, awayBase.awayGoals) * awayFactor,
+    awayDefence: ratio(away.averageGoalsAgainst, awayBase.homeGoals) / awayFactor,
   };
 }
 
@@ -279,6 +317,9 @@ export interface MatchPredictionInput {
    */
   homeLeagueStrength?: number;
   awayLeagueStrength?: number;
+  /** Scoring baselines of each side's own league, for a cross-league tie. */
+  homeLeagueAverages?: { homeGoals: number; awayGoals: number };
+  awayLeagueAverages?: { homeGoals: number; awayGoals: number };
 }
 
 export interface MatchPrediction {
@@ -296,8 +337,14 @@ export interface MatchPrediction {
   awayForm: TeamFormBundle;
   eloKnown: boolean;
   hasXg: boolean;
-  /** The cross-league rating adjustment, so a surprising number is traceable. */
-  leagueStrength: { applied: boolean; home: number; away: number };
+  /** The cross-league adjustment, so a surprising number is traceable. */
+  leagueStrength: {
+    applied: boolean;
+    home: number;
+    away: number;
+    homeTravelFactor: number;
+    awayTravelFactor: number;
+  };
 }
 
 export interface ModelConfiguration {
@@ -381,7 +428,6 @@ export async function computeMatchPrediction(
 
   const homeElo = elo.get(match.homeTeamId)!;
   const awayElo = elo.get(match.awayTeamId)!;
-  const strengths = buildAttackDefence(homeForm, awayForm, leagueAverages);
 
   /**
    * Cross-league ratings have to be put on the same scale first.
@@ -404,6 +450,23 @@ export async function computeMatchPrediction(
 
   const homeStrength = crossLeague ? (match.homeLeagueStrength as number) : 0;
   const awayStrength = crossLeague ? (match.awayLeagueStrength as number) : 0;
+
+  /**
+   * Poisson carries 0.4 of the ensemble and reads raw goal ratios, so leaving
+   * it on the fixture's league baseline undid most of the Elo correction: a
+   * cup tie has no baseline of its own and falls back to a global average.
+   */
+  const cross =
+    crossLeague && match.homeLeagueAverages && match.awayLeagueAverages
+      ? {
+          homeLeague: match.homeLeagueAverages,
+          awayLeague: match.awayLeagueAverages,
+          homeFactor: leagueTravelFactor(homeStrength, awayStrength),
+          awayFactor: leagueTravelFactor(awayStrength, homeStrength),
+        }
+      : undefined;
+
+  const strengths = buildAttackDefence(homeForm, awayForm, leagueAverages, cross);
 
   const models: ModelOutput[] = [
     runEloModel({
@@ -449,7 +512,13 @@ export async function computeMatchPrediction(
     awayForm,
     eloKnown: homeElo.known && awayElo.known,
     hasXg: models.some((m) => m.name === 'xg' && m.available),
-    leagueStrength: { applied: crossLeague, home: homeStrength, away: awayStrength },
+    leagueStrength: {
+      applied: crossLeague,
+      home: homeStrength,
+      away: awayStrength,
+      homeTravelFactor: cross ? Number(cross.homeFactor.toFixed(4)) : 1,
+      awayTravelFactor: cross ? Number(cross.awayFactor.toFixed(4)) : 1,
+    },
   };
 }
 
@@ -513,6 +582,10 @@ export async function runPredictions(
     teamLeagueStrength.set(teamId, leagueOffsets.get(entry.leagueId) ?? 0);
   }
 
+  /** Each team's home league, so its goal ratios can be read against it. */
+  const teamHomeLeague = new Map<string, string>();
+  for (const [teamId, entry] of bestLeague) teamHomeLeague.set(teamId, entry.leagueId);
+
   const matches = await prisma.match.findMany({
     where: {
       scheduledKickoffUtc: { gte: options.from, lt: options.to },
@@ -564,6 +637,19 @@ export async function runPredictions(
 
   const leagueAverageCache = new Map<string, { homeGoals: number; awayGoals: number; sampleSize: number }>();
 
+  /** The scoring baseline of the league a team actually plays in. */
+  const averagesForTeamLeague = async (teamId: string) => {
+    const leagueId = teamHomeLeague.get(teamId);
+    if (!leagueId) return undefined;
+
+    let averages = leagueAverageCache.get(leagueId);
+    if (!averages) {
+      averages = await getLeagueAverages(leagueId, asOf);
+      leagueAverageCache.set(leagueId, averages);
+    }
+    return { homeGoals: averages.homeGoals, awayGoals: averages.awayGoals };
+  };
+
   for (const match of matches) {
     const prices = await getBestPrices(match.id, asOf);
     if (prices.size === 0) {
@@ -605,6 +691,8 @@ export async function runPredictions(
         leagueDataQuality: Number(match.league.dataQuality),
         homeLeagueStrength: teamLeagueStrength.get(match.homeTeamId),
         awayLeagueStrength: teamLeagueStrength.get(match.awayTeamId),
+        homeLeagueAverages: await averagesForTeamLeague(match.homeTeamId),
+        awayLeagueAverages: await averagesForTeamLeague(match.awayTeamId),
       },
       asOf,
       config,

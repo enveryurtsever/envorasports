@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Prisma } from '@prisma/client';
-import { median, rejectOutlierQuotes } from './prediction-engine';
+import { leagueTravelFactor, median, rejectOutlierQuotes } from './prediction-engine';
 
 const quote = (price: string) => ({ price: new Prisma.Decimal(price) });
 
@@ -77,5 +77,33 @@ describe('rejectOutlierQuotes', () => {
     const result = rejectOutlierQuotes(quotes);
     expect(result.rejected).toBe(1);
     expect(Math.min(...result.rows.map((r) => Number(r.price)))).toBeCloseTo(4.9, 2);
+  });
+});
+
+describe('leagueTravelFactor', () => {
+  it('changes nothing between equal leagues', () => {
+    // A domestic tie must be untouched, or every existing number moves.
+    expect(leagueTravelFactor(40, 40)).toBeCloseTo(1, 6);
+    expect(leagueTravelFactor(0, 0)).toBeCloseTo(1, 6);
+  });
+
+  it('discounts a side moving up a hundred rating points', () => {
+    // Club Brugge (40) against Aston Villa (140): scores about three quarters
+    // of what it does at home, and concedes proportionally more.
+    expect(leagueTravelFactor(40, 140)).toBeCloseTo(0.72, 2);
+  });
+
+  it('rewards a side moving down by the mirror amount', () => {
+    const up = leagueTravelFactor(40, 140);
+    const down = leagueTravelFactor(140, 40);
+    // The two sides of one tie: what one loses the other gains.
+    expect(up + down).toBeCloseTo(2, 6);
+    expect(down).toBeGreaterThan(1);
+  });
+
+  it('is derived from the Elo scale, not a separate constant', () => {
+    // 400 points is a factor-of-ten difference in Elo, which is where these
+    // numbers come from — nothing new was invented to scale the goals.
+    expect(leagueTravelFactor(0, 400)).toBeCloseTo(2 / 11, 3);
   });
 });
