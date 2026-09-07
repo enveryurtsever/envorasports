@@ -907,15 +907,26 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
    * different questions, and a shared ledger was starving the later categories
    * of the day's best fixtures to enforce a rule nobody wanted.
    */
+  /**
+   * One ledger per slate, not per category.
+   *
+   * A slate is the unit a reader compares within: three İY/MS coupons on the
+   * same fixture are one tip shown three times, and that is what the rule is
+   * for. But Sürpriz's İY/MS slate and its 6+ goals slate are asking different
+   * questions of the bulletin, and forcing them onto disjoint fixtures starved
+   * whichever ran second — the tenfold slate could reach only one coupon out of
+   * a pool that supports two, because the straight Sürpriz coupons had spent
+   * the fixtures first.
+   *
+   * Categories with a single builder are unaffected: for Banko and Dengeli the
+   * slate and the category are the same thing.
+   */
   const ledgers = new Map<string, GenerationLedger>();
-  const ledgerFor = (category: string): GenerationLedger => {
-    // One per category, shared by every slate inside it: Sürpriz is one
-    // category whether a coupon comes from its İY/MS slate or its 6+ one, and
-    // a reader sees them side by side.
-    const existing = ledgers.get(category);
+  const ledgerFor = (slate: string): GenerationLedger => {
+    const existing = ledgers.get(slate);
     if (existing) return existing;
     const created: GenerationLedger = { usedMatches: new Set(), usedMarkets: new Set() };
-    ledgers.set(category, created);
+    ledgers.set(slate, created);
     return created;
   };
 
@@ -1003,7 +1014,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
         group.category,
         focusOffset,
         {
-          ledger: ledgerFor(group.category),
+          ledger: ledgerFor(`${group.category}:${group.key}`),
           perDay,
           settings,
           couponCount: group.couponCount,
@@ -1020,7 +1031,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       continue;
     }
 
-    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys, ledgerFor(group.category), perDay);
+    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys, ledgerFor(`${group.category}:${group.key}`), perDay);
 
     for (const [index, coupon] of built.coupons.entries()) {
       await persistCoupon(
@@ -1059,7 +1070,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       groupKeys,
       sourceCategory as CouponCategory,
       couponsGenerated,
-      { ledger: ledgerFor(sourceCategory), perDay },
+      { ledger: ledgerFor(`${sourceCategory}:system`), perDay },
     );
     outcomes.push(systemOutcome.outcome);
     couponsGenerated += systemOutcome.produced;
