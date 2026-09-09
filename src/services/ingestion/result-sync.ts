@@ -70,14 +70,29 @@ export function pollIntervalMinutes(
 
 /** True when the call never reached the provider, so it proves nothing. */
 /**
- * Past dates the plan has already refused.
+ * The span of dates the plan will actually serve.
  *
- * A refusal for a date that has been and gone is permanent — plan windows only
- * move forward — so asking again every ten minutes buys nothing and spends a
- * request each time. Future dates are never remembered: one beyond the window
- * today is served in two days' time.
+ * The provider states it outright when it refuses one: "Free plans do not have
+ * access to this date, try from 2026-09-08 to 2026-09-10." That is a far better
+ * thing to hold than a list of dates already refused, because it also rules out
+ * dates never yet asked for — and it is stored, not held in memory.
+ *
+ * The in-memory set this replaces was emptied by every restart, and on a day
+ * with eight of them the same hopeless dates were asked again after each one:
+ * 130 fixture calls against a budget of 100, only 75 of them answered, and the
+ * evening's matches went unsettled because the allowance was gone by then.
+ *
+ * Stored as an offset pair rather than absolute dates, since the window travels
+ * with the calendar: "yesterday through tomorrow" stays true tomorrow.
  */
-const refusedDates = new Set<string>();
+const PLAN_WINDOW_SETTING = 'sync.planDateOffsets';
+
+interface PlanWindow {
+  /** Days back from today the plan will serve, as a negative number or zero. */
+  from: number;
+  /** Days forward from today. */
+  to: number;
+}
 
 function isPlanRestriction(error: unknown): boolean {
   return (
@@ -86,10 +101,54 @@ function isPlanRestriction(error: unknown): boolean {
   );
 }
 
-function rememberIfPastRefusal(dateKey: string, error: unknown, now: Date): void {
-  if (!isPlanRestriction(error)) return;
-  if (dateKey >= now.toISOString().slice(0, 10)) return;
-  refusedDates.add(dateKey);
+function daysBetween(fromKey: string, toKey: string): number {
+  return Math.round(
+    (Date.parse(`${toKey}T00:00:00.000Z`) - Date.parse(`${fromKey}T00:00:00.000Z`)) / 864e5,
+  );
+}
+
+/**
+ * Reads the served range out of the provider's own refusal and stores it.
+ *
+ * Silent when the message carries no range: a guess here would bar dates the
+ * plan would have answered.
+ */
+async function learnPlanWindow(error: unknown, now: Date): Promise<void> {
+  if (!isPlanRestriction(error) || !(error instanceof Error)) return;
+
+  const match = /try from (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})/i.exec(error.message);
+  if (!match) return;
+
+  const today = now.toISOString().slice(0, 10);
+  const learned: PlanWindow = {
+    from: daysBetween(today, match[1] as string),
+    to: daysBetween(today, match[2] as string),
+  };
+
+  await prisma.appSetting.upsert({
+    where: { key: PLAN_WINDOW_SETTING },
+    create: {
+      key: PLAN_WINDOW_SETTING,
+      value: JSON.stringify(learned),
+      valueType: 'JSON',
+      category: 'sync',
+      description: "Days either side of today the fixture provider's plan will serve, learned from its own refusal.",
+    },
+    update: { value: JSON.stringify(learned) },
+  });
+  log.info('plan date window learned', { ...learned, from: match[1], to: match[2] });
+}
+
+/** Dates the plan is known to serve, or every date until it has told us. */
+async function servableDates(now: Date): Promise<(dateKey: string) => boolean> {
+  const window = await getAppSetting<PlanWindow | null>(PLAN_WINDOW_SETTING, null);
+  if (!window) return () => true;
+
+  const today = now.toISOString().slice(0, 10);
+  return (dateKey) => {
+    const offset = daysBetween(today, dateKey);
+    return offset >= window.from && offset <= window.to;
+  };
 }
 
 function isPreflightFailure(error: unknown): boolean {
@@ -164,7 +223,7 @@ export async function reconcileDiscoveredFixtures(
    * past date outright. A fixture therefore has to be reconciled on or before
    * the day it is played; miss that and its result is out of reach here for
    * good. The backward half of the window stays because a paid plan serves it,
-   * and `refusedDates` stops the free one paying for the refusal twice.
+   * and the learned plan window stops it paying for the same refusal twice.
    */
   const horizonDays = options.horizonDays ?? 2;
 
@@ -203,15 +262,17 @@ export async function reconcileDiscoveredFixtures(
     ...new Set(orphans.map((m) => m.scheduledKickoffUtc.toISOString().slice(0, 10))),
   ].sort().reverse();
 
+  const isServable = await servableDates(now);
+
   for (const dateKey of dates) {
-    if (refusedDates.has(dateKey)) continue;
+    if (!isServable(dateKey)) continue;
 
     let fixtures: ProviderFixture[];
     try {
       fixtures = await provider.getFixturesByDate(new Date(`${dateKey}T00:00:00.000Z`));
       result.requestsSpent++;
     } catch (error) {
-      rememberIfPastRefusal(dateKey, error, now);
+      await learnPlanWindow(error, now);
       log.warn('reconciliation date fetch failed', { date: dateKey, error: String(error) });
       continue;
     }
@@ -439,15 +500,17 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
     .reverse();
 
   if (provider.getFixturesByDate && dateKeys.length > 0 && dateKeys.length < due.length) {
+    const isServable = await servableDates(now);
+
     for (const dateKey of dateKeys) {
-      if (refusedDates.has(dateKey)) continue;
+      if (!isServable(dateKey)) continue;
 
       let fixtures: ProviderFixture[];
       try {
         fixtures = await provider.getFixturesByDate(new Date(`${dateKey}T00:00:00.000Z`));
         result.requestsSpent++;
       } catch (error) {
-        rememberIfPastRefusal(dateKey, error, now);
+        await learnPlanWindow(error, now);
         log.error('result date fetch failed', { date: dateKey, error: String(error) });
         // A budget refusal proves nothing about the match, so no attempt is
         // recorded against it; the next tick tries again.
