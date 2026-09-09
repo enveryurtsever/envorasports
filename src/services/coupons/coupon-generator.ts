@@ -5,6 +5,7 @@ import { Decimal, dec, toOdds } from '@/lib/math/decimal';
 import { combinedProbability } from '@/lib/math/probability';
 import {
   DEFAULT_SCORING_WEIGHTS,
+  RELIABLE_MARKETS,
   type CouponCategory,
   type CouponCategorySettings,
   type CouponFocusGroup,
@@ -390,15 +391,34 @@ export function buildCoupon(
    * markets that happen to be priced, and refusing it for being handicap-heavy
    * means no coupon at all.
    */
-  const perMarketCap =
-    settings.maxSelections <= 3 ? 1 : Math.max(2, Math.ceil(settings.maxSelections * 0.6));
+  /**
+   * How much of one coupon a single market may fill.
+   *
+   * The cap exists so a coupon is not one bet repeated, but it was applying
+   * equally to the market that measures as the most trustworthy on the board
+   * and to the ones that do not — and the novelty bonus above was pushing
+   * away from a repeated market on top of it. Over/under and double chance
+   * are held to what the coupon asks for; see RELIABLE_MARKETS for the
+   * measurement. Correlation still bounds how alike the legs may be.
+   */
+  const capFor = (marketCode: string): number =>
+    RELIABLE_MARKETS.includes(marketCode)
+      ? settings.maxSelections
+      : settings.maxSelections <= 3
+        ? 1
+        : Math.max(2, Math.ceil(settings.maxSelections * 0.6));
   let totalOdds = dec(1);
 
   for (const candidate of available) {
     if (chosen.length >= settings.maxSelections) break;
 
     if (settings.oneSelectionPerMatch && chosenMatches.has(candidate.matchId)) continue;
-    if (!relaxMarketMix && (marketCounts.get(candidate.marketCode) ?? 0) >= perMarketCap) continue;
+    if (
+      !relaxMarketMix &&
+      (marketCounts.get(candidate.marketCode) ?? 0) >= capFor(candidate.marketCode)
+    ) {
+      continue;
+    }
 
     const correlation = maxCorrelationWith(matrix, refOf(candidate), chosen.map(refOf));
     if (correlation > settings.maxCorrelation) continue;

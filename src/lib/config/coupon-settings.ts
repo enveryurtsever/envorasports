@@ -25,6 +25,29 @@ import { MARKET } from '@/lib/markets/registry';
  */
 const NO_EDGE_REQUIREMENT = -1;
 
+/**
+ * Markets that deliver what the model promises for them, measured.
+ *
+ * Over 5,024 settled predictions at 55% or better — the band Banko and
+ * Dengeli draw from — the gap between forecast and outcome is:
+ *
+ *   OVER_UNDER      n=1800   76.9% -> 77.1%   +0.2   ROI -2.5%
+ *   DOUBLE_CHANCE   n= 940   70.6% -> 71.3%   +0.6   ROI -3.8%
+ *   ASIAN_HANDICAP  n=2029   73.8% -> 76.5%   +2.7   ROI -6.2%  (already excluded)
+ *   BTTS            n= 178   59.8% -> 65.7%   +5.9   ROI +5.8%
+ *   MATCH_RESULT    n=  77   61.7% -> 72.7%  +11.0   ROI +25.5%
+ *
+ * Over/under is the most honest market on the board and double chance is
+ * close behind, both on samples large enough to trust. MATCH_RESULT's ROI is
+ * the eye-catching number and its sample is 77, which is not enough to act
+ * on — it is not in this list for that reason, not because it looks bad.
+ *
+ * Listed markets are allowed to fill a whole coupon rather than being capped
+ * at a share of it. The correlation guard still applies, so a coupon cannot
+ * become ten versions of the same bet on the same night.
+ */
+export const RELIABLE_MARKETS: readonly string[] = [MARKET.OVER_UNDER, MARKET.DOUBLE_CHANCE];
+
 export const COUPON_CATEGORIES = [
   'HIGH_CONFIDENCE',
   'BALANCED_PICKS',
@@ -223,11 +246,27 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     // fewer rather than repeating a fixture across them.
     couponCount: 3,
     allowedMarkets: [MARKET.MATCH_RESULT, MARKET.DOUBLE_CHANCE, MARKET.OVER_UNDER],
-    minTotalOdds: 300,
+    /**
+     * The odds floor follows the legs, not the other way round.
+     *
+     * Asking for 300 from ten legs is asking for an average price of 1.77,
+     * which is a 56% leg — so the floor was quietly setting the quality of
+     * every selection in the slate, and setting it low. Measured against the
+     * live pool, the ten most probable legs available multiply to 56.3 with
+     * the weakest at 57%; reaching 300 meant twelve legs and dropping to 53%.
+     *
+     * So the leg quality is stated directly instead of being implied by a
+     * payout target: ten sides the model rates at 55% or better. Against the
+     * live pool that reaches 250.8 at its longest, so a floor of 100 is
+     * satisfiable — but only just, because 55% left exactly ten eligible
+     * fixtures for ten legs. On a thin midweek the slate will come up empty
+     * rather than reach for a weaker leg, which is the intended trade.
+     */
+    minTotalOdds: 100,
     minSelections: 10,
     maxSelections: 11,
     // Each leg is a side the model likes; the combination is what makes it long.
-    minProbability: 0.45,
+    minProbability: 0.55,
     minConfidence: 0.4,
     minEdge: NO_EDGE_REQUIREMENT,
     minExpectedValue: NO_EDGE_REQUIREMENT,
