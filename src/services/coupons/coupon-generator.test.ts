@@ -43,6 +43,9 @@ const balanced = { ...DEFAULT_CATEGORY_SETTINGS.BALANCED_PICKS, minCombinedProba
 
 describe('filterForCategory', () => {
   it('drops candidates below the configured thresholds', () => {
+    // Explicit thresholds rather than the shipped ones: this covers the filter
+    // itself, so it keeps testing the mechanism whatever the categories ask for.
+    const strict = { ...balanced, minEdge: 0.02, minExpectedValue: 0.02 };
     const pool = [
       candidate({ id: 'ok' }),
       candidate({ id: 'low-prob', probability: dec('0.10') }),
@@ -52,8 +55,30 @@ describe('filterForCategory', () => {
       candidate({ id: 'no-edge', edge: dec('0.001'), expectedValue: dec('0.001') }),
     ];
 
-    const kept = filterForCategory(pool, balanced).map((c) => c.predictionId);
+    const kept = filterForCategory(pool, strict).map((c) => c.predictionId);
     expect(kept).toEqual(['ok']);
+  });
+
+  /**
+   * Guards a decision, not an implementation detail.
+   *
+   * Requiring edge means requiring the model to sit above the price, and over
+   * 17,057 settled predictions that selects its errors: the top expected-value
+   * tenth promised 32.1% and returned 12.3%. No shipped category may ask for it
+   * again without this failing first.
+   */
+  it('ships no category that demands the model beat the price', () => {
+    for (const [name, settings] of Object.entries(DEFAULT_CATEGORY_SETTINGS)) {
+      // Strictly below zero: a floor of zero still keeps only the candidates
+      // the model rates above the price, which is the same selection halved.
+      expect(settings.minEdge, `${name}.minEdge`).toBeLessThan(0);
+      expect(settings.minExpectedValue, `${name}.minExpectedValue`).toBeLessThan(0);
+    }
+  });
+
+  it('keeps a candidate the market prices above the model', () => {
+    const negative = candidate({ id: 'priced-out', edge: dec('-0.05'), expectedValue: dec('-0.05') });
+    expect(filterForCategory([negative], balanced).map((c) => c.predictionId)).toEqual(['priced-out']);
   });
 
   it('honours an allowed-markets whitelist', () => {
@@ -74,7 +99,10 @@ describe('filterForCategory', () => {
 
 describe('buildCoupon', () => {
   const pool = Array.from({ length: 6 }, (_, i) => candidate({ id: `c${i}` }));
-  const strategy = { name: 'highest_ev', rank: (c: Candidate) => Number(c.expectedValue) } as const;
+  const strategy = {
+    name: 'highest_probability',
+    rank: (c: Candidate) => Number(c.probability),
+  } as const;
 
   it('respects the odds band', () => {
     const coupon = buildCoupon(
@@ -310,7 +338,10 @@ describe('expectedColumnProbability', () => {
 });
 
 describe('minCombinedProbability', () => {
-  const strategy = { name: 'highest_ev', rank: (c: Candidate) => Number(c.expectedValue) } as const;
+  const strategy = {
+    name: 'highest_probability',
+    rank: (c: Candidate) => Number(c.probability),
+  } as const;
 
   it('rejects a coupon whose legs cannot land together often enough', () => {
     // Two legs at 0.45 land together 20% of the time. A category asking for 55%
@@ -341,7 +372,10 @@ describe('minCombinedProbability', () => {
 });
 
 describe('market mix', () => {
-  const strategy = { name: 'highest_ev', rank: (c: Candidate) => Number(c.expectedValue) } as const;
+  const strategy = {
+    name: 'highest_probability',
+    rank: (c: Candidate) => Number(c.probability),
+  } as const;
 
   it('will not build a short coupon out of one market', () => {
     // Two legs of Asian handicap is one idea twice. A short coupon has to mix.

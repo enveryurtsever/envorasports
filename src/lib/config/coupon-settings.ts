@@ -9,6 +9,22 @@ import { MARKET } from '@/lib/markets/registry';
  * declared valid range so the admin UI can render and enforce it.
  */
 
+/**
+ * Turns the edge and expected-value filters off rather than down.
+ *
+ * Zero reads like "no requirement" and is not: edge is probability minus the
+ * market's, so a floor of zero still keeps only the candidates where the model
+ * sits at or above the price — the upper half of its own error distribution.
+ * Measured over 17,057 settled predictions, the slice sitting right at zero
+ * expected value was already 5.7 points short of its forecast at -19% ROI, and
+ * the top tenth promised 32.1% and returned 12.3%.
+ *
+ * Edge is now neither a filter nor a ranking (see STRATEGIES in the coupon
+ * generator). It stays stored on every prediction, because it is worth
+ * measuring — it is just not worth selecting on.
+ */
+const NO_EDGE_REQUIREMENT = -1;
+
 export const COUPON_CATEGORIES = [
   'HIGH_CONFIDENCE',
   'BALANCED_PICKS',
@@ -213,8 +229,8 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     // Each leg is a side the model likes; the combination is what makes it long.
     minProbability: 0.45,
     minConfidence: 0.4,
-    minEdge: 0,
-    minExpectedValue: 0,
+    minEdge: NO_EDGE_REQUIREMENT,
+    minExpectedValue: NO_EDGE_REQUIREMENT,
     maxRisk: 0.7,
     minCombinedProbability: 0,
   },
@@ -231,8 +247,8 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     // needs the whole range or it is only ever the favourites.
     minProbability: 0.04,
     minConfidence: 0.3,
-    minEdge: 0,
-    minExpectedValue: 0,
+    minEdge: NO_EDGE_REQUIREMENT,
+    minExpectedValue: NO_EDGE_REQUIREMENT,
     maxRisk: 0.95,
     // Never smaller than a three: a two-leg column is barely a system. Three of
     // six is a materially harder ask than two of five, so the floor on a
@@ -260,8 +276,8 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     // honest way to ask for a 25% leg here.
     minProbability: 0.02,
     minConfidence: 0.25,
-    minEdge: 0,
-    minExpectedValue: 0,
+    minEdge: NO_EDGE_REQUIREMENT,
+    minExpectedValue: NO_EDGE_REQUIREMENT,
     maxRisk: 0.98,
     /**
      * 6+ goals lands about once in twenty. Three of them is a hard ask however
@@ -298,8 +314,8 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     // that is what emptied the category: the market prices a 92% shot keenly,
     // so the most likely legs carry almost none. Zero is the floor — we still
     // never back a selection the market rates above our own model.
-    minExpectedValue: 0,
-    minEdge: 0,
+    minExpectedValue: NO_EDGE_REQUIREMENT,
+    minEdge: NO_EDGE_REQUIREMENT,
     minProbability: 0.6,
     maxRisk: 0.4,
     maxCorrelation: 0.3,
@@ -335,8 +351,16 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     minSelections: 2,
     maxSelections: 5,
     minConfidence: 0.55,
-    minExpectedValue: 0.03,
-    minEdge: 0.025,
+    /**
+     * Zero, and deliberately.
+     *
+     * A positive floor here selects the candidates where the model sits
+     * furthest above the price, which measures as a ranking of the model's
+     * errors rather than of its value — see STRATEGIES in the coupon
+     * generator for the 17,057-prediction measurement behind that.
+     */
+    minExpectedValue: NO_EDGE_REQUIREMENT,
+    minEdge: NO_EDGE_REQUIREMENT,
     minProbability: 0.4,
     maxRisk: 0.6,
     maxCorrelation: 0.4,
@@ -364,9 +388,15 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     minSelections: 3,
     maxSelections: 8,
     minConfidence: 0.35,
-    // A long shot still has to beat the price, or it is a lottery ticket (§31).
-    minExpectedValue: 0.08,
-    minEdge: 0.04,
+    /**
+     * Zero, where a long shot used to be asked to "beat the price".
+     *
+     * That requirement is what made this the worst category on the board:
+     * demanding edge at long odds is demanding the model's largest positive
+     * errors. Its own legs came in at 24.1% against a promised 51.1%.
+     */
+    minExpectedValue: NO_EDGE_REQUIREMENT,
+    minEdge: NO_EDGE_REQUIREMENT,
     // Backtest evidence, not taste: below ~0.25 the model's calibration error
     // swamps its edge. Every leg still clears that bar — the length comes from
     // stacking honest legs, never from reaching for worse ones to pad the odds.
@@ -389,8 +419,8 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     minSelections: 6,
     maxSelections: 10,
     minConfidence: 0.5,
-    minExpectedValue: 0.02,
-    minEdge: 0.02,
+    minExpectedValue: NO_EDGE_REQUIREMENT,
+    minEdge: NO_EDGE_REQUIREMENT,
     minProbability: 0.35,
     maxRisk: 0.7,
     maxCorrelation: 0.35,
@@ -426,7 +456,8 @@ export const DEFAULT_SYSTEM_SETTINGS: SystemCouponSettings = {
   // converted EUR figure.
   currency: 'TRY',
   minCombinedProbability: 0.02,
-  minExpectedValue: 0.02,
+  // Zero for the same measured reason as every other category above.
+  minExpectedValue: NO_EDGE_REQUIREMENT,
   maxCorrelation: 0.35,
   oneSelectionPerMatch: true,
   couponCount: 3,

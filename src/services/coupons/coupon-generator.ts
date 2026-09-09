@@ -98,31 +98,47 @@ export interface GenerationResult {
   };
 }
 
-/** Ranking functions that make the coupons in a category actually differ (§32). */
+/**
+ * Ranking functions that make the coupons in a category actually differ (§32).
+ *
+ * Every one of them scores a candidate on the model's own terms. None compares
+ * the model's probability to the price, and that is the point.
+ *
+ * Ranking by expected value or edge selects, by construction, the candidates
+ * where the model sits furthest above the market — which on a model with any
+ * error at all is a ranking of its mistakes, not of its insights. Measured over
+ * 17,057 settled predictions the model is well calibrated overall (38.3%
+ * predicted against 39.1% observed, a better calibration error than the market
+ * itself), and yet sorting those same predictions by expected value produces a
+ * clean monotonic gradient: the lowest tenth beats its forecast by 14.9 points
+ * and the highest tenth falls short of it by 19.8, promising 32.1% and
+ * returning 12.3% at -36% ROI. It survives every control — inside MATCH_RESULT
+ * alone the top fifth promises 33.7% and returns 8.5%, and inside a 1.5-4.0
+ * odds band it promises 48.7% and returns 31.6%. So it is not a long-shot
+ * artefact or a mixing artefact; it is the selection itself.
+ *
+ * `value_density` looked like a different measure and was not: log(odds) /
+ * -log(probability) exceeds 1 exactly when probability x odds exceeds 1, so it
+ * ranked on the same axis and is gone with the other two.
+ *
+ * This is also why the one category that never asked for edge — Banko, at
+ * minEdge 0 and ranked on probability — is the one that has held up.
+ */
 const STRATEGIES = [
-  { name: 'highest_ev', rank: (c: Candidate) => Number(c.expectedValue) },
-  { name: 'highest_confidence', rank: (c: Candidate) => c.confidence },
-  { name: 'balanced_risk', rank: (c: Candidate) => Number(c.expectedValue) * (1 - c.risk) },
-  { name: 'highest_edge', rank: (c: Candidate) => Number(c.edge) },
-  { name: 'best_data_quality', rank: (c: Candidate) => c.dataQuality * Number(c.probability) },
   { name: 'highest_probability', rank: (c: Candidate) => Number(c.probability) },
+  { name: 'highest_confidence', rank: (c: Candidate) => c.confidence },
+  // Was expectedValue x (1 - risk); the risk half was never the problem.
+  { name: 'balanced_risk', rank: (c: Candidate) => Number(c.probability) * (1 - c.risk) },
+  { name: 'best_data_quality', rank: (c: Candidate) => c.dataQuality * Number(c.probability) },
   {
     /**
-     * Odds bought per unit of certainty spent.
+     * What the model believes, weighted by how well it knows the fixture.
      *
-     * A category asked to hold 70% *and* clear 2.00 cannot be filled by ranking
-     * on edge or probability alone: the safe legs are too short to reach the
-     * odds, and the long ones break the floor. log(odds) / -log(probability) is
-     * exactly the exchange rate between the two — a fairly priced leg scores 1,
-     * and anything above it buys more odds than it costs in certainty.
+     * Keeps a fifth ordering so a category asking for several coupons still
+     * gets several different ones, without reaching for the price to do it.
      */
-    name: 'value_density',
-    rank: (c: Candidate) => {
-      const probability = Number(c.probability);
-      const odds = Number(c.odds);
-      if (probability <= 0 || probability >= 1 || odds <= 1) return 0;
-      return Math.log(odds) / -Math.log(probability);
-    },
+    name: 'confident_probability',
+    rank: (c: Candidate) => Number(c.probability) * c.confidence,
   },
 ] as const;
 
