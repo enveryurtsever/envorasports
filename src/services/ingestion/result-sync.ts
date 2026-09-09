@@ -3,7 +3,12 @@ import { createLogger } from '@/lib/logging/logger';
 import { getFootballProvider } from '@/lib/providers';
 import type { ProviderFixture } from '@/lib/providers/types';
 import { getAppSetting } from '@/lib/config/settings-service';
-import { normalizeTeamName, similarity } from './team-resolver';
+import {
+  RESERVE_SIDE,
+  isContainmentMatch,
+  normalizeTeamName,
+  similarity,
+} from './team-resolver';
 
 const log = createLogger('ingestion:results');
 
@@ -64,6 +69,29 @@ export function pollIntervalMinutes(
 }
 
 /** True when the call never reached the provider, so it proves nothing. */
+/**
+ * Past dates the plan has already refused.
+ *
+ * A refusal for a date that has been and gone is permanent — plan windows only
+ * move forward — so asking again every ten minutes buys nothing and spends a
+ * request each time. Future dates are never remembered: one beyond the window
+ * today is served in two days' time.
+ */
+const refusedDates = new Set<string>();
+
+function isPlanRestriction(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /do not have access|not available for your plan/i.test(error.message)
+  );
+}
+
+function rememberIfPastRefusal(dateKey: string, error: unknown, now: Date): void {
+  if (!isPlanRestriction(error)) return;
+  if (dateKey >= now.toISOString().slice(0, 10)) return;
+  refusedDates.add(dateKey);
+}
+
 function isPreflightFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return (
@@ -115,19 +143,28 @@ export interface ResultSyncResult {
 export async function reconcileDiscoveredFixtures(
   now: Date = new Date(),
   options: { horizonDays?: number } = {},
-): Promise<{ candidates: number; reconciled: number; requestsSpent: number }> {
+): Promise<{
+  candidates: number;
+  reconciled: number;
+  absorbed: number;
+  requestsSpent: number;
+}> {
   const provider = getFootballProvider();
-  const result = { candidates: 0, reconciled: 0, requestsSpent: 0 };
+  const result = { candidates: 0, reconciled: 0, absorbed: 0, requestsSpent: 0 };
   if (!provider.getFixturesByDate) return result;
 
   /**
-   * Two days, which is as far as the plan will serve.
+   * Two days either side, of which only the forward half ever answers.
    *
    * Reconciliation is what lets a discovered fixture be priced by this provider
    * at all — until it carries an integer id, `/odds?fixture=` rejects it and
-   * the five markets only this provider serves stay empty. The free plan
-   * answers "try from <yesterday> to <tomorrow>", so anything further out
-   * simply has to wait for its date to come round.
+   * the five markets only this provider serves stay empty.
+   *
+   * The free plan serves today and the two days after it, and refuses every
+   * past date outright. A fixture therefore has to be reconciled on or before
+   * the day it is played; miss that and its result is out of reach here for
+   * good. The backward half of the window stays because a paid plan serves it,
+   * and `refusedDates` stops the free one paying for the refusal twice.
    */
   const horizonDays = options.horizonDays ?? 2;
 
@@ -157,11 +194,14 @@ export async function reconcileDiscoveredFixtures(
   ].sort().reverse();
 
   for (const dateKey of dates) {
+    if (refusedDates.has(dateKey)) continue;
+
     let fixtures: ProviderFixture[];
     try {
       fixtures = await provider.getFixturesByDate(new Date(`${dateKey}T00:00:00.000Z`));
       result.requestsSpent++;
     } catch (error) {
+      rememberIfPastRefusal(dateKey, error, now);
       log.warn('reconciliation date fetch failed', { date: dateKey, error: String(error) });
       continue;
     }
@@ -172,35 +212,107 @@ export async function reconcileDiscoveredFixtures(
       const home = normalizeTeamName(orphan.homeTeam.name);
       const away = normalizeTeamName(orphan.awayTeam.name);
 
-      let best: { fixture: ProviderFixture; score: number } | null = null;
-      for (const fixture of fixtures) {
+      /**
+       * Two ways to recognise the same fixture, and both are needed.
+       *
+       * Scoring alone missed almost everything worth reconciling: the odds
+       * provider writes "Dortmund", "Club Brugge", "Oxford", and against
+       * "Borussia Dortmund", "Club Brugge KV" and "Oxford United" bigram
+       * similarity gives 0.61, 0.77 and 0.59 — all far below a threshold that
+       * has to stay near-exact, so a whole night of European football stayed
+       * SCHEDULED with coupons resting on it. Containment recognises exactly
+       * that shape, and refuses a reserve side on either end.
+       */
+      const candidates = fixtures.filter((fixture) => {
         // Two hours of drift: kickoffs move, and the two providers do not
         // always agree on the minute.
         if (
           Math.abs(fixture.kickoffUtc.getTime() - orphan.scheduledKickoffUtc.getTime()) >
           2 * 3600 * 1000
         ) {
-          continue;
+          return false;
         }
 
-        const score = Math.min(
-          similarity(home, normalizeTeamName(fixture.homeTeamName)),
-          similarity(away, normalizeTeamName(fixture.awayTeamName)),
-        );
-        if (!best || score > best.score) best = { fixture, score };
+        // The senior fixture and its U19 game are often hours apart on the same
+        // day, so the kickoff window does not separate them on its own.
+        if (
+          RESERVE_SIDE.test(fixture.homeTeamName) !== RESERVE_SIDE.test(orphan.homeTeam.name) ||
+          RESERVE_SIDE.test(fixture.awayTeamName) !== RESERVE_SIDE.test(orphan.awayTeam.name)
+        ) {
+          return false;
+        }
+
+        const scored =
+          Math.min(
+            similarity(home, normalizeTeamName(fixture.homeTeamName)),
+            similarity(away, normalizeTeamName(fixture.awayTeamName)),
+          ) >= 0.9;
+
+        const contained =
+          isContainmentMatch(orphan.homeTeam.name, fixture.homeTeamName) &&
+          isContainmentMatch(orphan.awayTeam.name, fixture.awayTeamName);
+
+        return scored || contained;
+      });
+
+      /**
+       * One candidate or none. Containment is deliberately generous — "Rovers"
+       * is a whole word in three English clubs — so ambiguity is what keeps it
+       * safe: a wrong join writes another match's score onto this one, and
+       * every coupon resting on it settles against a fiction.
+       */
+      if (candidates.length !== 1) {
+        if (candidates.length > 1) {
+          log.warn('reconciliation ambiguous, left alone', {
+            matchId: orphan.id,
+            fixture: `${orphan.homeTeam.name} - ${orphan.awayTeam.name}`,
+            candidates: candidates.map((f) => `${f.homeTeamName} - ${f.awayTeamName}`),
+          });
+        }
+        continue;
       }
 
-      // Near-exact only. A wrong join here writes another match's score onto
-      // this one, and every coupon resting on it settles against a fiction.
-      if (!best || best.score < 0.9) continue;
+      const best = { fixture: candidates[0] as ProviderFixture };
 
-      // The provider's id may already belong to a fixture we hold, in which
-      // case this one is a duplicate of it rather than a new fixture.
+      /**
+       * The provider's id may already belong to a fixture we hold, in which
+       * case this one is that fixture's twin rather than a new one.
+       *
+       * Skipping it was leaving the twin SCHEDULED for good: discovery makes a
+       * fresh copy of a fixture the provider already gave us, the real one
+       * finishes, and the copy sits on the matches page as the same game
+       * unplayed. It cannot take the provider's id — that is spoken for — so
+       * it takes the result instead, and is barred from anything built later.
+       */
       const clash = await prisma.match.findFirst({
         where: { source: provider.name, externalId: best.fixture.externalId },
-        select: { id: true },
+        select: {
+          id: true,
+          status: true,
+          homeScore: true,
+          awayScore: true,
+          halfTimeHomeScore: true,
+          halfTimeAwayScore: true,
+          finishedAtUtc: true,
+        },
       });
-      if (clash) continue;
+
+      if (clash) {
+        await prisma.match.update({
+          where: { id: orphan.id },
+          data: {
+            status: clash.status,
+            homeScore: clash.homeScore,
+            awayScore: clash.awayScore,
+            halfTimeHomeScore: clash.halfTimeHomeScore,
+            halfTimeAwayScore: clash.halfTimeAwayScore,
+            finishedAtUtc: clash.finishedAtUtc,
+            excludedFromGeneration: true,
+          },
+        });
+        result.absorbed++;
+        continue;
+      }
 
       await prisma.match.update({
         where: { id: orphan.id },
@@ -217,7 +329,7 @@ export async function reconcileDiscoveredFixtures(
     }
   }
 
-  if (result.reconciled > 0) {
+  if (result.reconciled > 0 || result.absorbed > 0) {
     log.info('discovered fixtures reconciled', { ...result });
   }
   return result;
@@ -317,11 +429,14 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
 
   if (provider.getFixturesByDate && dateKeys.length > 0 && dateKeys.length < due.length) {
     for (const dateKey of dateKeys) {
+      if (refusedDates.has(dateKey)) continue;
+
       let fixtures: ProviderFixture[];
       try {
         fixtures = await provider.getFixturesByDate(new Date(`${dateKey}T00:00:00.000Z`));
         result.requestsSpent++;
       } catch (error) {
+        rememberIfPastRefusal(dateKey, error, now);
         log.error('result date fetch failed', { date: dateKey, error: String(error) });
         // A budget refusal proves nothing about the match, so no attempt is
         // recorded against it; the next tick tries again.

@@ -2,7 +2,12 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db/prisma';
 import { createLogger } from '@/lib/logging/logger';
 import { getOddsProvider, THE_ODDS_API } from '@/lib/providers';
-import { normalizeTeamName, similarity } from './team-resolver';
+import {
+  RESERVE_SIDE,
+  isContainmentMatch,
+  normalizeTeamName,
+  similarity,
+} from './team-resolver';
 import type { ProviderOddsEvent } from '@/lib/providers/types';
 
 const log = createLogger('ingestion:discovery');
@@ -375,31 +380,11 @@ async function resolveKnownTeam(name: string, leagueId: string): Promise<string 
    * only thing the models can use.
    */
   /**
-   * One name is the other with a club suffix on it.
-   *
-   * The archive writes "Blackburn", "Cardiff", "Newcastle"; the odds provider
-   * writes "Blackburn Rovers", "Cardiff City", "Newcastle United". Bigram
-   * similarity puts those at 0.55-0.71, well under a threshold that has to stay
-   * high because "Celta Vigo" scores 0.86 against "Celta de Vigo II" — a
-   * reserve side, and exactly the merge that must not happen.
-   *
-   * Stripping the suffixes outright is worse: "Manchester United" and
-   * "Manchester City" both become "manchester". So containment is only
-   * accepted when it is unambiguous — when exactly one team in the field is a
-   * whole-word prefix of the name being resolved.
+   * Shared with result reconciliation, which joins the same two providers'
+   * spellings — see `isContainmentMatch`. Only ever accepted below when
+   * exactly one team in the field answers to it.
    */
-  const containment = (candidate: string): boolean => {
-    const a = normalized;
-    const b = normalizeTeamName(candidate);
-    if (a === b) return true;
-    // Short cores collide across clubs; below five characters this is guesswork.
-    const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
-    if (shorter.length < 5) return false;
-    return longer === shorter || longer.startsWith(`${shorter} `);
-  };
-
-  /** Reserve and youth sides are separate clubs however close the name reads. */
-  const RESERVE = /\b(ii|iii|b|c|u\s?1[6-9]|u\s?2[0-3]|res|reserves?|academy|youth)\b/i;
+  const containment = (candidate: string): boolean => isContainmentMatch(name, candidate);
 
   const rank = (teams: typeof inCompetition) => {
     let best: { id: string; score: number; matches: number } | null = null;
@@ -455,7 +440,7 @@ async function resolveKnownTeam(name: string, leagueId: string): Promise<string 
    */
   const contained = everyone.filter(
     (team) =>
-      !RESERVE.test(team.name) &&
+      !RESERVE_SIDE.test(team.name) &&
       [team.name, ...team.aliases.map((alias) => alias.alias)].some(containment),
   );
   if (contained.length === 1) {
@@ -464,7 +449,7 @@ async function resolveKnownTeam(name: string, leagueId: string): Promise<string 
     return team.id;
   }
 
-  const wide = rank(everyone.filter((team) => !RESERVE.test(team.name)));
+  const wide = rank(everyone.filter((team) => !RESERVE_SIDE.test(team.name)));
   if (wide && wide.score >= WIDE_MAPPING_THRESHOLD) {
     await rememberSpelling(wide.id, name);
     return wide.id;

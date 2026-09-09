@@ -19,6 +19,20 @@ const NOISE_TOKENS = new Set([
   'calcio', 'futbol', 'football', 'spor', 'kulubu', 'kulübü', 'the', 'de', 'do',
 ]);
 
+/**
+ * Abbreviations that mean exactly one thing in football.
+ *
+ * "Sheffield Utd" and "Sheffield United" are one club, but bigram similarity
+ * scores them 0.82 and neither is a whole word inside the other, so the two
+ * providers' spellings never joined and the fixture stayed unsettled with
+ * three coupon legs resting on it.
+ *
+ * Deliberately tiny: "Ath" is Atletico in "Ath Madrid" and Athletic in "Ath
+ * Bilbao", and "Sp" is Sporting for two different clubs, so those stay for the
+ * alias table to learn rather than being guessed here.
+ */
+const ABBREVIATIONS = new Map([['utd', 'united']]);
+
 /** Strips diacritics, punctuation and club noise to a comparable core. */
 export function normalizeTeamName(raw: string): string {
   const base = raw
@@ -33,9 +47,50 @@ export function normalizeTeamName(raw: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  const tokens = base.split(' ').filter((token) => token && !NOISE_TOKENS.has(token));
+  const tokens = base
+    .split(' ')
+    .filter((token) => token && !NOISE_TOKENS.has(token))
+    .map((token) => ABBREVIATIONS.get(token) ?? token);
   // Never normalise a name down to nothing — fall back to the stripped form.
   return (tokens.length > 0 ? tokens.join(' ') : base).trim();
+}
+
+/**
+ * Reserve, youth and academy sides are separate clubs however close the name
+ * reads. Shared so that everything joining two providers' fixtures applies the
+ * same guard — one path missing it is enough to write a U19 score onto the
+ * senior fixture, and every coupon resting on it then settles against it.
+ */
+export const RESERVE_SIDE = /\b(ii|iii|b|c|u\s?1[6-9]|u\s?2[0-3]|res|reserves?|academy|youth)\b/i;
+
+/**
+ * True when one name is the other with a trailing qualifier.
+ *
+ * The archive writes "Dortmund", "Cardiff", "Oxford"; the providers write
+ * "Borussia Dortmund", "Cardiff City", "Oxford United". Bigram similarity puts
+ * those at 0.59-0.71, far under any threshold that can stay safe — "Celta
+ * Vigo" scores 0.86 against "Celta de Vigo II", which is a reserve side and
+ * exactly the join that must not happen.
+ *
+ * Stripping the suffixes outright is worse: "Manchester United" and
+ * "Manchester City" both reduce to "manchester". So the whole word has to
+ * match at one end, and only the caller's own uniqueness check makes it safe.
+ */
+export function isContainmentMatch(a: string, b: string): boolean {
+  // A reserve side never contains a senior one. This has to be decided on the
+  // raw names, because normalising drops the "de" out of "Celta de Vigo II"
+  // and leaves "celta vigo ii", which a senior "Celta Vigo" is a prefix of.
+  if (RESERVE_SIDE.test(a) !== RESERVE_SIDE.test(b)) return false;
+
+  const first = normalizeTeamName(a);
+  const second = normalizeTeamName(b);
+  if (first === second) return true;
+
+  const [shorter, longer] = first.length <= second.length ? [first, second] : [second, first];
+  // Short cores collide across clubs; below five characters this is guesswork.
+  if (shorter.length < 5) return false;
+
+  return longer.startsWith(`${shorter} `) || longer.endsWith(` ${shorter}`);
 }
 
 /** Dice coefficient over character bigrams: 1 = identical, 0 = nothing shared. */
