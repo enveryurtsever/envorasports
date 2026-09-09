@@ -182,8 +182,18 @@ export async function reconcileDiscoveredFixtures(
     select: {
       id: true,
       scheduledKickoffUtc: true,
-      homeTeam: { select: { name: true } },
-      awayTeam: { select: { name: true } },
+      /**
+       * Aliases as well as the name.
+       *
+       * The two providers disagree on more than a suffix: ours says "Sp
+       * Lisbon" where the football provider says "Sporting CP", and neither
+       * similarity nor containment joins an abbreviation to the word it
+       * stands for. The alias table is where that answer already lives —
+       * discovery writes it — and not reading it here meant a Champions
+       * League fixture with two coupon legs on it could never be settled.
+       */
+      homeTeam: { select: { name: true, aliases: { select: { alias: true } } } },
+      awayTeam: { select: { name: true, aliases: { select: { alias: true } } } },
     },
   });
   result.candidates = orphans.length;
@@ -209,8 +219,16 @@ export async function reconcileDiscoveredFixtures(
     for (const orphan of orphans) {
       if (orphan.scheduledKickoffUtc.toISOString().slice(0, 10) !== dateKey) continue;
 
-      const home = normalizeTeamName(orphan.homeTeam.name);
-      const away = normalizeTeamName(orphan.awayTeam.name);
+      const homeNames = [orphan.homeTeam.name, ...orphan.homeTeam.aliases.map((a) => a.alias)];
+      const awayNames = [orphan.awayTeam.name, ...orphan.awayTeam.aliases.map((a) => a.alias)];
+
+      /** Any spelling we hold for this side against the one the provider used. */
+      const sideMatches = (ours: string[], theirs: string): boolean =>
+        ours.some(
+          (name) =>
+            similarity(normalizeTeamName(name), normalizeTeamName(theirs)) >= 0.9 ||
+            isContainmentMatch(name, theirs),
+        );
 
       /**
        * Two ways to recognise the same fixture, and both are needed.
@@ -242,17 +260,10 @@ export async function reconcileDiscoveredFixtures(
           return false;
         }
 
-        const scored =
-          Math.min(
-            similarity(home, normalizeTeamName(fixture.homeTeamName)),
-            similarity(away, normalizeTeamName(fixture.awayTeamName)),
-          ) >= 0.9;
-
-        const contained =
-          isContainmentMatch(orphan.homeTeam.name, fixture.homeTeamName) &&
-          isContainmentMatch(orphan.awayTeam.name, fixture.awayTeamName);
-
-        return scored || contained;
+        return (
+          sideMatches(homeNames, fixture.homeTeamName) &&
+          sideMatches(awayNames, fixture.awayTeamName)
+        );
       });
 
       /**
