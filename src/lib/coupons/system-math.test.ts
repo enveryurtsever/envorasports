@@ -294,6 +294,34 @@ describe('what a system is actually worth', () => {
     expect(plan.returnProbability).toBeCloseTo(probabilityOfAtLeast([0.5, 0.5, 0.5], 2), 10);
   });
 
+  /**
+   * The slip prints stake, odds and best-case return together, so they have to
+   * agree: the odds shown are maxReturn over the *total* stake. Dividing by one
+   * column's stake instead printed the sum of every column's odds under a
+   * "maximum" heading — 3119.80 for a 3,4,5 over six whose best column paid
+   * 338.72 — and no outcome ever paid it.
+   */
+  it('pays a multiple of the whole outlay, not of one column', () => {
+    const plan = buildSystemPlan({
+      selections: [
+        { id: 'a', odds: 2, matchId: 'm1', probability: 0.5 },
+        { id: 'b', odds: 2, matchId: 'm2', probability: 0.5 },
+        { id: 'c', odds: 2, matchId: 'm3', probability: 0.5 },
+      ],
+      systemSizes: [2],
+      stakePerColumn: 10,
+      maxTotalStake: 1000,
+    });
+
+    // Three columns of 4.00 on 10 each: every column landing returns 120 on a
+    // 30 outlay, so the slip's odds figure is 4.00 — the same as one column,
+    // because every column here is the same price. It is emphatically not the
+    // 12.00 that dividing 120 by a single column's stake would give.
+    expect(plan.maxReturn.toFixed(2)).toBe('120.00');
+    expect(plan.maxReturn.dividedBy(plan.totalStake).toFixed(2)).toBe('4.00');
+    expect(plan.maxReturn.dividedBy(plan.stakePerColumn).toFixed(2)).toBe('12.00');
+  });
+
   it('reports nulls rather than guessing when probabilities are absent', () => {
     const plan = buildSystemPlan({
       selections: baseSelections(4),

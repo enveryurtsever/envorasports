@@ -222,9 +222,22 @@ function toUnlocked(coupon: CouponRow): UnlockedCoupon {
           stakePerColumn: Number(coupon.systemCoupon.stakePerColumn),
           totalStake: Number(coupon.systemCoupon.totalStake),
           maxReturn: Number(coupon.systemCoupon.maxReturn),
+          /**
+           * What the outlay multiplies by if every column lands.
+           *
+           * Divided by the total stake, not by one column's. `maxReturn` is
+           * the sum of all 41 columns' returns, so dividing it by a single
+           * column's stake mixed the units and printed the sum of every
+           * column's odds under a heading that reads "maximum": a 3,4,5 over
+           * six legs showed 3119.80 when the best single column paid 338.72
+           * and nothing paid 3119.80 at all. It also broke the card's own
+           * arithmetic, since 82.00 x 3119.80 is not the 6239.59 printed
+           * beside it. On total stake it comes out at 76.09, and the three
+           * numbers on the slip agree again.
+           */
           maxOdds:
-            Number(coupon.systemCoupon.stakePerColumn) > 0
-              ? Number(coupon.systemCoupon.maxReturn) / Number(coupon.systemCoupon.stakePerColumn)
+            Number(coupon.systemCoupon.totalStake) > 0
+              ? Number(coupon.systemCoupon.maxReturn) / Number(coupon.systemCoupon.totalStake)
               : 0,
           totalReturn: Number(coupon.systemCoupon.totalReturn),
           winningColumns: coupon.systemCoupon.winningColumns,
