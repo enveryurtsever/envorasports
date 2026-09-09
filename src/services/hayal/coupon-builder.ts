@@ -190,6 +190,16 @@ export async function generateHayalCoupons(
 
   let referenceIndex = 0;
   const usedFixtures = new Set<string>();
+  /**
+   * Leg sets already published this run, across every slate.
+   *
+   * `pickLegs` only *prefers* fixtures no coupon has used, so once a thin pool
+   * is exhausted it hands back the same legs again — and a slate asking for two
+   * coupons got the same two legs twice, while Normal and Premium published a
+   * third and fourth copy of it under different names. Four identical coupons
+   * are worse than one, so an exact repeat ends its slate instead.
+   */
+  const publishedLegSets = new Set<string>();
 
   for (const slate of HAYAL_SLATES) {
     const eligibleMatches = qualifying
@@ -213,6 +223,16 @@ export async function generateHayalCoupons(
           pool.length === 0 ? 'no_priced_selection_for_slate' : 'not_enough_hayal_candidates';
         break;
       }
+
+      const signature = legs
+        .map((leg) => `${leg.matchId}:${leg.selectionCode}`)
+        .sort()
+        .join('|');
+      if (publishedLegSets.has(signature)) {
+        shortfallReason = 'duplicate_of_existing_coupon';
+        break;
+      }
+      publishedLegSets.add(signature);
 
       const variant = variantFor(slate, legs.every((leg) => leg.premium));
       const signalsForCoupon = legs.map((leg) => {

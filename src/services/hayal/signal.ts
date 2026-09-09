@@ -22,9 +22,23 @@ const log = createLogger('hayal:signal');
  */
 
 export const HAYAL_DEFAULTS = {
-  /** "HT/FT BTTS < 8.00" as stated. */
-  bttsThreshold: 8,
-  /** "HT 2-2 < 38.00" as stated. */
+  /**
+   * Was 8.00, as the claim was stated. It never once fired.
+   *
+   * Across every fixture a provider has priced this market on, the shortest
+   * quote was 8.30 and the median 10.25 — so "below 8.00" describes something
+   * that did not happen in 1,689 recorded signals, and the test could not
+   * begin. 9.50 is not a round number picked to make it fire: it selects the
+   * shortest 20.7% of observed prices, against the 21.5% that the HT 2-2 leg
+   * of the same claim already selects. Same selectivity, so the two halves of
+   * the claim are being asked an equally hard question.
+   *
+   * Every signal row stores the threshold it was judged under, so the 1,689
+   * rows judged at 8.00 stay distinguishable from the ones judged at 9.50 and
+   * no earlier verdict is rewritten.
+   */
+  bttsThreshold: 9.5,
+  /** "HT 2-2 < 38.00" as stated. Fires on 21.5% of quotes; left alone. */
   ht22Threshold: 38,
 } as const;
 

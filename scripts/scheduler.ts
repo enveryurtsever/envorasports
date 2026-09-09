@@ -192,10 +192,18 @@ const JOBS: ScheduledJob[] = [
     run: () => runArchiveRefresh(),
   },
   {
-    // Reads stored prices only, so it costs no provider quota and can run
-    // often enough to catch a fixture the moment its signal market is priced.
+    /**
+     * Twelve hours, which is a budget decision rather than a cadence one.
+     *
+     * Judging stored prices is free, but the same job also buys the half-time
+     * markets no other job fetches, at four credits a fixture. With one
+     * fixture a run that is eight credits a day: the 99 credits left this
+     * month carry it twelve days, and a fresh 500 carries a full month at 240
+     * while leaving the bulk pricing its share. Running it every half hour
+     * would have spent the month in a day.
+     */
     name: 'hayal',
-    everyMs: 30 * MINUTE,
+    everyMs: 12 * 60 * MINUTE,
     run: () => runHayal(),
   },
 ];
