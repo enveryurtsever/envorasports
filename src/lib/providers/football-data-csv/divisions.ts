@@ -63,4 +63,14 @@ export function csvUrl(baseUrl: string, startYear: number, division: string): st
   return `${baseUrl.replace(/\/$/, '')}/mmz4281/${seasonCode(startYear)}/${division}.csv`;
 }
 
-export const FOOTBALL_DATA_BASE_URL = 'https://www.football-data.co.uk';
+/**
+ * The bare domain, not `www.`.
+ *
+ * The `www.` host answers 503 to everything — the CSVs, the index pages, all
+ * of it — while the apex serves normally. That is why the archive refresh had
+ * been failing silently: League One and League Two were added but never
+ * imported, leaving them with 3 matches and 0 against 2,288 for the
+ * Championship, and the ~38 clubs in those divisions had no row at all, so
+ * every one of their fixtures was discarded as an unresolvable team.
+ */
+export const FOOTBALL_DATA_BASE_URL = 'https://football-data.co.uk';
