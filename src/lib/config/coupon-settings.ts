@@ -249,6 +249,53 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     minExpectedValue: NO_EDGE_REQUIREMENT,
     maxRisk: 0.7,
     minCombinedProbability: 0,
+    /**
+     * Eight of ten, not ten of ten.
+     *
+     * Ten legs the model rates around 60% each land together 2.2% of the time,
+     * which is a lottery ticket however good the legs are. The same ten played
+     * 8/9/10 returns on eight and comes in 34.5% of the time — the selections
+     * are identical, only the demand on them changes. Fifty-six columns, which
+     * is on the heavy side but still a slip a reader can follow.
+     *
+     * The base stays at ten: at eleven legs an eight-fold system is 165
+     * columns, which is a spreadsheet rather than a coupon.
+     */
+    system: { systemType: 'SYSTEM_8_9_10', minBaseSelections: 10, maxBaseSelections: 10 },
+  },
+  {
+    /**
+     * The Surprise category's own coupons, played as a system.
+     *
+     * These were straight accumulators of five to eight legs, and measured on
+     * what they actually paid they were the clearest failure on the board: the
+     * five settled ones had stated chances of 0.6%, 0.5%, 0.0%, 0.0% and 0.0%,
+     * and all five lost. Nothing had gone wrong with the predictions — those
+     * coupons were never going to land, because a long accumulator multiplies
+     * the bookmaker's margin once per leg.
+     *
+     * The same selections as a 4/5/6 come in 42.6% of the time against 2.5%
+     * straight, for twenty-two columns. That is the whole change: the legs are
+     * unchanged, the demand on them is not.
+     */
+    key: 'surprise_system',
+    category: 'HIGH_VALUE',
+    couponCount: 3,
+    // Every market the category allows: the change here is the shape of the
+    // coupon, not which bets go into it.
+    allowedMarkets: [],
+    minSelections: 5,
+    maxSelections: 6,
+    minProbability: 0.35,
+    minConfidence: 0.35,
+    minEdge: NO_EDGE_REQUIREMENT,
+    minExpectedValue: NO_EDGE_REQUIREMENT,
+    maxRisk: 0.85,
+    // A system's return comes off its columns, so the parent's 100.0 floor —
+    // written for an accumulator — would refuse every one of these.
+    minTotalOdds: 20,
+    minCombinedProbability: 0,
+    system: { systemType: 'SYSTEM_4_5_6', minBaseSelections: 5, maxBaseSelections: 6 },
   },
   {
     key: 'htft',
