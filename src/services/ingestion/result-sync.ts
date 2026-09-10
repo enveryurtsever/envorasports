@@ -258,9 +258,25 @@ export async function reconcileDiscoveredFixtures(
   result.candidates = orphans.length;
   if (orphans.length === 0) return result;
 
+  /**
+   * Only the dates with a fixture inside the next few hours, or just played.
+   *
+   * Orphans up to two days out were being re-asked every ten minutes, one
+   * request per date per run, all night. An orphan that kicks off tomorrow
+   * evening gains nothing from being bound at 03:00 today; it is bound when its
+   * kick-off comes within reach, which is still hours before the per-fixture
+   * pricing that depends on it.
+   */
+  const REACH_MS = 6 * 60 * 60 * 1000;
   const dates = [
-    ...new Set(orphans.map((m) => m.scheduledKickoffUtc.toISOString().slice(0, 10))),
-  ].sort().reverse();
+    ...new Set(
+      orphans
+        .filter((m) => Math.abs(m.scheduledKickoffUtc.getTime() - now.getTime()) <= REACH_MS)
+        .map((m) => m.scheduledKickoffUtc.toISOString().slice(0, 10)),
+    ),
+  ]
+    .sort()
+    .reverse();
 
   const isServable = await servableDates(now);
 
@@ -492,12 +508,26 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
     .toISOString()
     .slice(0, 10);
 
-  const dateKeys = [
-    ...new Set(due.map((match) => match.scheduledKickoffUtc.toISOString().slice(0, 10))),
-  ]
-    .filter((key) => key >= earliest)
-    .sort()
-    .reverse();
+  /**
+   * A date is worth fetching only once something on it can have changed.
+   *
+   * The fetch is one request for every match on the day, which is cheap — but
+   * it was being made every ten minutes from midnight on, because with twenty
+   * fixtures spread across a day and their check times staggered, some match
+   * was always "due". Ninety-four of those calls went out between 00:31 and
+   * 07:11 while nothing was being played, and the budget was gone before the
+   * evening's kick-offs. Before kick-off a result fetch can only report a
+   * postponement, and the near-kickoff window is early enough to catch one.
+   */
+  // Three hours: the same boundary pollIntervalMinutes uses for "approaching".
+  const APPROACHING_MS = 180 * 60_000;
+  const worthFetching = new Set(
+    due
+      .filter((match) => match.scheduledKickoffUtc.getTime() - now.getTime() <= APPROACHING_MS)
+      .map((match) => match.scheduledKickoffUtc.toISOString().slice(0, 10)),
+  );
+
+  const dateKeys = [...worthFetching].filter((key) => key >= earliest).sort().reverse();
 
   if (provider.getFixturesByDate && dateKeys.length > 0 && dateKeys.length < due.length) {
     const isServable = await servableDates(now);
