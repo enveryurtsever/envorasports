@@ -25,29 +25,6 @@ import { MARKET } from '@/lib/markets/registry';
  */
 const NO_EDGE_REQUIREMENT = -1;
 
-/**
- * Markets that deliver what the model promises for them, measured.
- *
- * Over 5,024 settled predictions at 55% or better — the band Banko and
- * Dengeli draw from — the gap between forecast and outcome is:
- *
- *   OVER_UNDER      n=1800   76.9% -> 77.1%   +0.2   ROI -2.5%
- *   DOUBLE_CHANCE   n= 940   70.6% -> 71.3%   +0.6   ROI -3.8%
- *   ASIAN_HANDICAP  n=2029   73.8% -> 76.5%   +2.7   ROI -6.2%  (already excluded)
- *   BTTS            n= 178   59.8% -> 65.7%   +5.9   ROI +5.8%
- *   MATCH_RESULT    n=  77   61.7% -> 72.7%  +11.0   ROI +25.5%
- *
- * Over/under is the most honest market on the board and double chance is
- * close behind, both on samples large enough to trust. MATCH_RESULT's ROI is
- * the eye-catching number and its sample is 77, which is not enough to act
- * on — it is not in this list for that reason, not because it looks bad.
- *
- * Listed markets are allowed to fill a whole coupon rather than being capped
- * at a share of it. The correlation guard still applies, so a coupon cannot
- * become ten versions of the same bet on the same night.
- */
-export const RELIABLE_MARKETS: readonly string[] = [MARKET.OVER_UNDER, MARKET.DOUBLE_CHANCE];
-
 export const COUPON_CATEGORIES = [
   'HIGH_CONFIDENCE',
   'BALANCED_PICKS',

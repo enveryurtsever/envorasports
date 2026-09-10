@@ -5,7 +5,6 @@ import { Decimal, dec, toOdds } from '@/lib/math/decimal';
 import { combinedProbability } from '@/lib/math/probability';
 import {
   DEFAULT_SCORING_WEIGHTS,
-  RELIABLE_MARKETS,
   type CouponCategory,
   type CouponCategorySettings,
   type CouponFocusGroup,
@@ -394,31 +393,25 @@ export function buildCoupon(
   /**
    * How much of one coupon a single market may fill.
    *
-   * The cap exists so a coupon is not one bet repeated, but it was applying
-   * equally to the market that measures as the most trustworthy on the board
-   * and to the ones that do not — and the novelty bonus above was pushing
-   * away from a repeated market on top of it. Over/under and double chance
-   * are held to what the coupon asks for; see RELIABLE_MARKETS for the
-   * measurement. Correlation still bounds how alike the legs may be.
+   * Over/under and double chance were briefly exempted from this on a
+   * measurement that turned out to be worthless: it counted 5,024 "settled
+   * predictions" from a table that keeps every superseded run alongside the
+   * current one, so the sample was inflated about ninefold, and it measured
+   * predictions rather than the legs actually played. On the 86 settled coupon
+   * legs, over/under is the weakest market on the board — 69.8% promised
+   * against 50.0% delivered at -24.7% ROI — the opposite of what the exemption
+   * assumed. Neither sample is big enough to justify steering toward a market
+   * or away from one, so the cap treats them all alike again.
    */
-  const capFor = (marketCode: string): number =>
-    RELIABLE_MARKETS.includes(marketCode)
-      ? settings.maxSelections
-      : settings.maxSelections <= 3
-        ? 1
-        : Math.max(2, Math.ceil(settings.maxSelections * 0.6));
+  const perMarketCap =
+    settings.maxSelections <= 3 ? 1 : Math.max(2, Math.ceil(settings.maxSelections * 0.6));
   let totalOdds = dec(1);
 
   for (const candidate of available) {
     if (chosen.length >= settings.maxSelections) break;
 
     if (settings.oneSelectionPerMatch && chosenMatches.has(candidate.matchId)) continue;
-    if (
-      !relaxMarketMix &&
-      (marketCounts.get(candidate.marketCode) ?? 0) >= capFor(candidate.marketCode)
-    ) {
-      continue;
-    }
+    if (!relaxMarketMix && (marketCounts.get(candidate.marketCode) ?? 0) >= perMarketCap) continue;
 
     const correlation = maxCorrelationWith(matrix, refOf(candidate), chosen.map(refOf));
     if (correlation > settings.maxCorrelation) continue;
