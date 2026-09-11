@@ -876,10 +876,22 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     select: { id: true },
   });
 
+  /**
+   * Only coupons nothing has started on.
+   *
+   * A pending coupon whose first match has kicked off is no longer a draft
+   * that a regeneration may replace — it is the record of what was backed,
+   * and the only thing that can settle it is the result. Regenerating a window
+   * on the day its matches were played deleted five such coupons, with legs on
+   * three matches still to be played that evening, and produced nothing in
+   * their place because there was nothing left to build from. The outcomes of
+   * those legs can no longer be attributed to anything.
+   */
   await prisma.coupon.deleteMany({
     where: {
       generationRunId: { in: runsForDate.map((previous) => previous.id) },
       resultStatus: 'PENDING',
+      firstKickoffUtc: { gt: asOf },
     },
   });
 
