@@ -21,6 +21,18 @@ export interface CsvDivision {
    */
   apiFootballName?: string;
   apiFootballCountry?: string;
+  /**
+   * Where the archive keeps this league.
+   *
+   * The main European divisions have one file per season under
+   * /mmz4281/<season>/<code>.csv, with a Div column, half-time scores, match
+   * statistics and opening as well as closing prices. The "extra" leagues —
+   * Scandinavia, the Americas, Asia — live in one file per country under
+   * /new/<file>.csv, every season together, a League column instead of Div,
+   * full-time goals only and closing prices only. Same archive, different
+   * shape; the parser needs to know which it is holding.
+   */
+  archive?: { file: string; league: string };
 }
 
 export const CSV_DIVISIONS: CsvDivision[] = [
@@ -45,6 +57,21 @@ export const CSV_DIVISIONS: CsvDivision[] = [
   { code: 'B1', name: 'Jupiler Pro League', country: 'Belgium', oddsApiKey: 'soccer_belgium_first_div', tier: 1 },
   { code: 'SC0', name: 'Premiership', country: 'Scotland', oddsApiKey: 'soccer_spl', tier: 1 },
   { code: 'G1', name: 'Super League', country: 'Greece', oddsApiKey: 'soccer_greece_super_league', tier: 1, apiFootballName: 'Super League 1' },
+  /**
+   * The goal leagues, chosen by measurement rather than by reputation.
+   *
+   * Over the last five seasons of the archive, six or more goals land in 8.2%
+   * of Eliteserien and MLS matches, 7.1% of the Superliga's and 6.6% of the
+   * Allsvenskan's, against 5.8% across everything already held — comparable
+   * to the Eredivisie and 2. Bundesliga, the best of the existing set. The
+   * same measurement kept Brazil (3.7%), Argentina (2.4%) and Japan (5.0%)
+   * out, whatever a screenshot of one 3-3 might suggest. All four are
+   * calendar-year leagues in play through the European autumn.
+   */
+  { code: 'NOR1', name: 'Eliteserien', country: 'Norway', oddsApiKey: 'soccer_norway_eliteserien', tier: 1, archive: { file: 'NOR', league: 'Eliteserien' } },
+  { code: 'USA1', name: 'MLS', country: 'USA', oddsApiKey: 'soccer_usa_mls', tier: 1, archive: { file: 'USA', league: 'MLS' }, apiFootballName: 'Major League Soccer' },
+  { code: 'DNK1', name: 'Superliga', country: 'Denmark', oddsApiKey: 'soccer_denmark_superliga', tier: 1, archive: { file: 'DNK', league: 'Superliga' } },
+  { code: 'SWE1', name: 'Allsvenskan', country: 'Sweden', oddsApiKey: 'soccer_sweden_allsvenskan', tier: 1, archive: { file: 'SWE', league: 'Allsvenskan' } },
 ];
 
 export const CSV_DIVISION_BY_CODE = new Map(CSV_DIVISIONS.map((d) => [d.code, d]));
@@ -60,7 +87,11 @@ export function seasonCode(startYear: number): string {
 }
 
 export function csvUrl(baseUrl: string, startYear: number, division: string): string {
-  return `${baseUrl.replace(/\/$/, '')}/mmz4281/${seasonCode(startYear)}/${division}.csv`;
+  const root = baseUrl.replace(/\/$/, '');
+  const archive = CSV_DIVISION_BY_CODE.get(division)?.archive;
+  // One file per country carries every season; the season is filtered after.
+  if (archive) return `${root}/new/${archive.file}.csv`;
+  return `${root}/mmz4281/${seasonCode(startYear)}/${division}.csv`;
 }
 
 /**

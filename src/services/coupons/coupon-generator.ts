@@ -55,6 +55,8 @@ export interface Candidate {
   dataQuality: number;
   kickoffUtc: Date;
   targetDate: LocalDateKey;
+  /** The league's archive code (E0, NOR1, ...), for slates scoped to leagues. */
+  leagueCode: string | null;
 }
 
 export interface BuiltCoupon {
@@ -189,7 +191,7 @@ export async function loadCandidates(
       dataQualityScore: true,
       market: { select: { code: true } },
       selection: { select: { code: true } },
-      match: { select: { scheduledKickoffUtc: true } },
+      match: { select: { scheduledKickoffUtc: true, league: { select: { csvDivision: true } } } },
     },
   });
 
@@ -215,6 +217,7 @@ export async function loadCandidates(
       risk: Number(p.riskScore),
       dataQuality: Number(p.dataQualityScore),
       kickoffUtc: p.match.scheduledKickoffUtc,
+      leagueCode: p.match.league.csvDivision,
       targetDate: localDateKey(p.match.scheduledKickoffUtc, timezone),
     }));
 }
@@ -225,9 +228,13 @@ export function filterForCategory(
   settings: CouponCategorySettings,
 ): Candidate[] {
   const allowed = new Set(settings.allowedMarkets);
+  const leagues = new Set(settings.allowedLeagues ?? []);
+  const selections = new Set(settings.allowedSelections ?? []);
 
   return candidates.filter((candidate) => {
     if (allowed.size > 0 && !allowed.has(candidate.marketCode)) return false;
+    if (leagues.size > 0 && (!candidate.leagueCode || !leagues.has(candidate.leagueCode))) return false;
+    if (selections.size > 0 && !selections.has(candidate.selectionCode)) return false;
     if (isUnofferableHandicap(candidate)) return false;
     if (Number(candidate.probability) < settings.minProbability) return false;
     if (candidate.confidence < settings.minConfidence) return false;
@@ -1064,6 +1071,8 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       ...parent,
       couponCount: wanted,
       allowedMarkets: group.allowedMarkets,
+      allowedLeagues: group.allowedLeagues,
+      allowedSelections: group.allowedSelections,
       minTotalOdds: group.minTotalOdds ?? parent.minTotalOdds,
       minCombinedProbability: group.minCombinedProbability ?? parent.minCombinedProbability,
       minSelections: group.minSelections ?? parent.minSelections,

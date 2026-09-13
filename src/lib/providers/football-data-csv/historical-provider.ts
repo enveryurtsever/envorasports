@@ -1,7 +1,7 @@
 import { createLogger } from '@/lib/logging/logger';
 import { ProviderError } from '../types';
 import { CSV_DIVISION_BY_CODE, FOOTBALL_DATA_BASE_URL, csvUrl } from './divisions';
-import { parseSeasonCsv, type HistoricalMatchRow } from './parser';
+import { parseCountryCsv, parseSeasonCsv, type HistoricalMatchRow } from './parser';
 
 export const FOOTBALL_DATA_CSV = 'football-data-csv';
 
@@ -58,7 +58,10 @@ export function createFootballDataCsvProvider(
         }
 
         const csv = await response.text();
-        const rows = parseSeasonCsv(csv, division);
+        const archive = CSV_DIVISION_BY_CODE.get(division)?.archive;
+        const rows = archive
+          ? parseCountryCsv(csv, { division, league: archive.league, season: startYear })
+          : parseSeasonCsv(csv, division);
         log.info('season parsed', { division, startYear, matches: rows.length });
         return rows;
       } catch (error) {

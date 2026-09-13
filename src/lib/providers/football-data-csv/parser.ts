@@ -259,6 +259,54 @@ function extractOdds(row: Record<string, string>): HistoricalOddsRecord[] {
 
 // --- entry point -----------------------------------------------------------
 
+/**
+ * Reads the archive's country files, which hold every season of a league in
+ * one CSV with a different header from the per-season files: Country, League,
+ * Season, Date, Time, Home, Away, HG, AG, Res, then closing prices only. No
+ * half-time score, no statistics, no opening odds.
+ *
+ * Rows are renamed onto the per-season vocabulary and handed to the same row
+ * builder, so the two shapes produce identical records and the odds columns —
+ * PSC, MaxC, AvgC, B365C — are read by the same book table. Filtered to one
+ * league and one season, because the file carries all of both.
+ */
+export function parseCountryCsv(
+  csv: string,
+  options: { division: string; league: string; season: number },
+): HistoricalMatchRow[] {
+  const clean = csv.replace(/^﻿/, '');
+  const lines = clean.split(/\r?\n/).filter((line) => line.trim() !== '');
+  if (lines.length < 2) return [];
+
+  const headers = parseCsvLine(lines[0] as string).map((h) => h.trim());
+  const rows: HistoricalMatchRow[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseCsvLine(lines[i] as string);
+    const row: Record<string, string> = {};
+    headers.forEach((header, index) => {
+      row[header] = values[index] ?? '';
+    });
+
+    // Some rows carry a trailing space on the league name ("Superliga ").
+    if (text(row.League)?.trim() !== options.league) continue;
+    // A calendar league writes "2026"; an autumn-spring one writes "2026/2027".
+    // Either way the first four digits are the season's start year.
+    if (Number((row.Season ?? '').trim().slice(0, 4)) !== options.season) continue;
+
+    row.Div = options.division;
+    row.HomeTeam = row.Home ?? '';
+    row.AwayTeam = row.Away ?? '';
+    row.FTHG = row.HG ?? '';
+    row.FTAG = row.AG ?? '';
+
+    const built = buildRow(row, options.division);
+    if (built) rows.push(built);
+  }
+
+  return rows;
+}
+
 export function parseSeasonCsv(csv: string, expectedDivision?: string): HistoricalMatchRow[] {
   // Strip a UTF-8 BOM; the first header would otherwise be "﻿Div".
   const clean = csv.replace(/^﻿/, '');
@@ -275,6 +323,16 @@ export function parseSeasonCsv(csv: string, expectedDivision?: string): Historic
       row[header] = values[index] ?? '';
     });
 
+    const built = buildRow(row, expectedDivision);
+    if (built) rows.push(built);
+  }
+
+  return rows;
+}
+
+/** One record from one row, or null for a footer, a blank, or another division. */
+function buildRow(row: Record<string, string>, expectedDivision?: string): HistoricalMatchRow | null {
+  {
     const division = text(row.Div);
     const homeTeamName = text(row.HomeTeam);
     const awayTeamName = text(row.AwayTeam);
@@ -283,14 +341,14 @@ export function parseSeasonCsv(csv: string, expectedDivision?: string): Historic
 
     // A row without teams or a final score is a footer/blank artefact.
     if (!division || !homeTeamName || !awayTeamName || homeScore === null || awayScore === null) {
-      continue;
+      return null;
     }
-    if (expectedDivision && division !== expectedDivision) continue;
+    if (expectedDivision && division !== expectedDivision) return null;
 
     const parsedDate = parseCsvDate(row.Date ?? '', row.Time);
-    if (!parsedDate) continue;
+    if (!parsedDate) return null;
 
-    rows.push({
+    return {
       division,
       kickoffUtc: parsedDate.date,
       kickoffTimeAssumed: parsedDate.assumed,
@@ -318,8 +376,6 @@ export function parseSeasonCsv(csv: string, expectedDivision?: string): Historic
         redCards: num(row.AR),
       },
       odds: extractOdds(row),
-    });
+    };
   }
-
-  return rows;
 }

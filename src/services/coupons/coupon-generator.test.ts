@@ -33,6 +33,7 @@ function candidate(overrides: Partial<Candidate> & { id: string }): Candidate {
     dataQuality: overrides.dataQuality ?? 0.8,
     kickoffUtc: overrides.kickoffUtc ?? kickoff,
     targetDate: overrides.targetDate ?? '2026-09-05',
+    leagueCode: 'E0',
   };
 }
 

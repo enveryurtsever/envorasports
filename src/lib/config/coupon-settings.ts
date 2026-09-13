@@ -69,6 +69,10 @@ export const couponCategorySettingsSchema = z
     oneSelectionPerMatch: z.boolean(),
     /** Empty = every active market is eligible. */
     allowedMarkets: z.array(z.string()),
+    /** Archive codes (E0, NOR1, ...). Empty or absent means every league. */
+    allowedLeagues: z.array(z.string()).optional(),
+    /** Selection codes (OVER_2_5, BTTS_YES, ...). Empty or absent means every selection. */
+    allowedSelections: z.array(z.string()).optional(),
   })
   // The invariants §17 requires; the database repeats them as CHECK constraints.
   .refine((s) => s.maxTotalOdds === null || s.minTotalOdds <= s.maxTotalOdds, {
@@ -185,6 +189,24 @@ export interface CouponFocusGroup {
   couponCount: number;
   allowedMarkets: string[];
   /**
+   * Restricts a slate to leagues, by archive code.
+   *
+   * The goal slates are the reason: six or more goals is a 3.5% event in La
+   * Liga 2 and an 11% one in the Bundesliga, and a slate that draws from both
+   * alike is filled from whichever has more fixtures that week, not from
+   * wherever the bet actually lands.
+   */
+  allowedLeagues?: string[];
+  /**
+   * Restricts a slate to selections, by code.
+   *
+   * A market can carry both sides of a question, and ranking on probability
+   * picks the likelier side. In a slate built to back goals in the leagues
+   * where goals are common, that produced Under 4.5, Under 3.5 and Under 2.5
+   * — the likeliest outcomes, and the opposite of the point.
+   */
+  allowedSelections?: string[];
+  /**
    * Overrides for the parent's thresholds, which a narrow market often cannot
    * meet. The parent bars any leg under 25%, and six-or-more goals is a 5%
    * event by nature — so under the parent's rules the slate is empty by
@@ -293,6 +315,36 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     maxRisk: 0.85,
     // A system's return comes off its columns, so the parent's 100.0 floor —
     // written for an accumulator — would refuse every one of these.
+    minTotalOdds: 20,
+    minCombinedProbability: 0,
+    system: { systemType: 'SYSTEM_4_5_6', minBaseSelections: 5, maxBaseSelections: 6 },
+  },
+  {
+    /**
+     * The goal leagues, played as a system.
+     *
+     * Chosen by the archive, not by reputation: six or more goals lands in
+     * 11.0% of Bundesliga matches, 9.7% of the Eredivisie's, 8.7% of
+     * 2. Bundesliga's, 8.2% of Eliteserien and MLS, 8.1% of Süper Lig's, 7.1%
+     * of the Superliga's and 6.6% of the Allsvenskan's — against 3.5% in La
+     * Liga 2 and 3.7% in Brazil's top flight. A goal slate filled from
+     * wherever the week's fixtures happen to be is filled from the wrong
+     * places most weeks; this one is told where the bet lands.
+     */
+    key: 'goal_leagues',
+    category: 'HIGH_VALUE',
+    couponCount: 3,
+    allowedMarkets: [MARKET.OVER_UNDER, MARKET.BTTS],
+    // Goals, not their absence: the over lines that pay and both teams scoring.
+    allowedSelections: ['OVER_1_5', 'OVER_2_5', 'OVER_3_5', 'BTTS_YES'],
+    allowedLeagues: ['D1', 'N1', 'D2', 'NOR1', 'USA1', 'T1', 'DNK1', 'SWE1'],
+    minSelections: 5,
+    maxSelections: 6,
+    minProbability: 0.4,
+    minConfidence: 0.35,
+    minEdge: NO_EDGE_REQUIREMENT,
+    minExpectedValue: NO_EDGE_REQUIREMENT,
+    maxRisk: 0.85,
     minTotalOdds: 20,
     minCombinedProbability: 0,
     system: { systemType: 'SYSTEM_4_5_6', minBaseSelections: 5, maxBaseSelections: 6 },
