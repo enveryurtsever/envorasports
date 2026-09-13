@@ -40,7 +40,15 @@ export const CREDITS_PER_COMPETITION = creditCost(DEFAULT_MARKETS, DEFAULT_REGIO
 
 export async function syncBulkOdds(
   window: CoverageWindow,
-  options: { now?: Date } = {},
+  options: {
+    now?: Date;
+    /**
+     * Spend into the reserve. An operator's call, never the scheduler's: the
+     * reserve is what keeps the month's last days serviceable, and only a
+     * person weighing a specific slate against that should override it.
+     */
+    ignoreReserve?: boolean;
+  } = {},
 ): Promise<BulkOddsResult> {
   const now = options.now ?? new Date();
   const provider = getOddsProvider();
@@ -144,7 +152,7 @@ export async function syncBulkOdds(
   );
 
   const policy = oddsQuotaPolicy();
-  const reserve = Math.ceil(policy.budget * (policy.reserveRatio ?? 0.15));
+  const reserve = options.ignoreReserve ? 0 : Math.ceil(policy.budget * (policy.reserveRatio ?? 0.15));
 
   const [marketIds, selectionIds] = await Promise.all([loadMarketIds(), loadSelectionIds()]);
   const bookmakerCache = new Map<string, string>();
