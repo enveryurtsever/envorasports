@@ -603,6 +603,41 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
     return result;
   }
 
+  /**
+   * No per-fixture fallback where a date fetch exists.
+   *
+   * On the free plan the batched `ids` form is refused, so one batch of twenty
+   * is twenty separate calls — counted here as one request, and spent at the
+   * provider as twenty. Every night just after the budget reset, the first run
+   * found nothing worth a date fetch (the day's matches were hours away and
+   * the unsettled ones were two days back, outside the window the plan serves)
+   * and fell through to this path for forty-odd matches: ~46 calls, the
+   * provider's remaining header dropping 99 to 53 in five minutes, for
+   * fixtures a date fetch could not have reached either. Two evenings in a row
+   * the budget was gone before kick-off because of it.
+   *
+   * Anything a date fetch can reach, the date path handles. Anything it cannot
+   * is out of the plan's reach by any route; it is charged an attempt so it
+   * ages out, and no request is spent on it.
+   */
+  if (typeof provider.getFixturesByDate === 'function') {
+    if (due.length > 0) {
+      await prisma.match.updateMany({
+        where: { id: { in: due.map((m) => m.id) } },
+        data: { resultSyncAttempts: { increment: 1 }, resultLastSyncedAt: now },
+      });
+    }
+    log.info('result sync complete', {
+      candidates: result.candidates,
+      checked: 0,
+      finished: 0,
+      requests: 0,
+      dates: 0,
+      unreachable: due.length,
+    });
+    return result;
+  }
+
   for (let i = 0; i < due.length; i += BATCH_SIZE) {
     const batch = due.slice(i, i + BATCH_SIZE);
     let fixtures: ProviderFixture[];
