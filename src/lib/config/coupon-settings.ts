@@ -229,6 +229,19 @@ export interface CouponFocusGroup {
   system?: { systemType: string; minBaseSelections: number; maxBaseSelections: number };
 }
 
+/**
+ * The single-match surprise: one match, its goal markets stacked.
+ *
+ * Drawn from the leagues where goals are common, anchored on the model's
+ * Over 3.5, and stated at the measured conditional chance rather than the
+ * naive product — see single-match-surprise.ts for the arithmetic.
+ */
+export const SINGLE_MATCH_SURPRISE = {
+  count: 3,
+  leagues: ['D1', 'N1', 'D2', 'NOR1', 'USA1', 'T1', 'DNK1', 'SWE1'],
+  minAnchorProbability: 0.35,
+} as const;
+
 export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
   {
     /**

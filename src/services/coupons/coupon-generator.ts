@@ -5,12 +5,14 @@ import { Decimal, dec, toOdds } from '@/lib/math/decimal';
 import { combinedProbability } from '@/lib/math/probability';
 import {
   DEFAULT_SCORING_WEIGHTS,
+  SINGLE_MATCH_SURPRISE,
   type CouponCategory,
   type CouponCategorySettings,
   type CouponFocusGroup,
   type CouponScoringWeights,
   type SystemCouponSettings,
 } from '@/lib/config/coupon-settings';
+import { buildSingleMatchStacks } from './single-match-surprise';
 import { getAppSetting } from '@/lib/config/settings-service';
 import { dateKeyToUtcMidnight, localDateKey, type LocalDateKey } from '@/lib/time/zoned';
 import { buildSelectionPool } from '@/services/predictions/selection-pool';
@@ -1132,6 +1134,25 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
   // System coupons last: they reuse the same candidate pool, and can be built
   // from more than one category — a high-variance set benefits most, since a
   // system only needs k of n legs to return anything.
+  // --- Single-match surprise: one match, its goal markets stacked ----------
+  {
+    const wanted = Math.max(0, SINGLE_MATCH_SURPRISE.count - standingCount('HIGH_VALUE', 'single_match'));
+    if (wanted > 0 && options.categorySettings.HIGH_VALUE?.enabled) {
+      const stacks = buildSingleMatchStacks(candidates, { ...SINGLE_MATCH_SURPRISE, count: wanted, asOf });
+      for (const stack of stacks) {
+        await persistCoupon(stack, run.id, options);
+        couponsGenerated++;
+      }
+      outcomes.push({
+        category: 'HIGH_VALUE',
+        requested: SINGLE_MATCH_SURPRISE.count,
+        produced: stacks.length,
+        candidatePool: candidates.filter((c) => (SINGLE_MATCH_SURPRISE.leagues as readonly string[]).includes(c.leagueCode ?? '')).length,
+        shortfallReason: stacks.length < wanted ? 'no_match_with_anchor_and_btts_priced' : null,
+      });
+    }
+  }
+
   for (const sourceCategory of options.systemSettings.sourceCategories) {
     const settings = options.categorySettings[sourceCategory as CouponCategory];
     if (!settings) continue;
@@ -1188,7 +1209,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
   };
 }
 
-async function persistCoupon(
+export async function persistCoupon(
   coupon: BuiltCoupon,
   runId: string,
   options: GenerateOptions,
