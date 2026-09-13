@@ -431,7 +431,27 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     // never back a selection the market rates above our own model.
     minExpectedValue: NO_EDGE_REQUIREMENT,
     minEdge: NO_EDGE_REQUIREMENT,
-    minProbability: 0.6,
+    /**
+
+     * 0.75, from 0.60, on measurement.
+
+     *
+
+     * Over 84 distinct coupon legs the model delivers what it promises only
+
+     * from 75% upward (84.2% promised, 85.7% delivered); every band below is
+
+     * short — 70.5% promised against 58.8% delivered in the 65–75 band, the
+
+     * one a 0.60 floor draws from most. Banko is the category that claims
+
+     * certainty, so it draws only from where the model has earned it. Fewer
+
+     * coupons, some days none; the ones built are the ones that hold.
+
+     */
+
+    minProbability: 0.75,
     maxRisk: 0.4,
     maxCorrelation: 0.3,
     minDataQuality: 0.6,
