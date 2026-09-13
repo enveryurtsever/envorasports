@@ -220,6 +220,17 @@ export async function settleCoupons(): Promise<{ coupons: number; selections: nu
   for (const coupon of candidates) {
     if (coupon.selections.length === 0) continue;
 
+    /**
+     * A system is not an accumulator and must not be graded as one.
+     *
+     * "Any leg lost, coupon lost" is the rule for a straight coupon. Applied to
+     * a 3/4/5 over six legs with three winners it marked the coupon LOST while
+     * the three-fold column had paid 39.14 on a 2.00 stake and the system row
+     * beneath it read PARTIAL_WIN — the card showed the wrong one. A system's
+     * status comes from its columns, and the system settlement writes it.
+     */
+    if (coupon.kind === 'SYSTEM') continue;
+
     const statuses = coupon.selections.map((s) => s.resultStatus as SettlementOutcome);
     const lost = statuses.some((s) => s === 'LOST');
     const allNeutral = statuses.every(isNeutral);
@@ -268,6 +279,7 @@ export async function settleSystemCoupons(): Promise<{ systems: number; columns:
     },
     select: {
       id: true,
+      couponId: true,
       columns: {
         select: {
           id: true,
@@ -333,6 +345,15 @@ export async function settleSystemCoupons(): Promise<{ systems: number; columns:
           },
         }),
       ),
+      // The card reads the coupon row, so the two must agree.
+      prisma.coupon.update({
+        where: { id: system.couponId },
+        data: {
+          resultStatus: settlement.status,
+          settledAt: new Date(),
+          settlementVersion,
+        },
+      }),
       prisma.systemCoupon.update({
         where: { id: system.id },
         data: {

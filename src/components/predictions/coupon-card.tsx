@@ -106,7 +106,8 @@ export async function CouponCard({
             })}
           </span>
           <span className="text-sm font-bold text-gold-light">
-            {money(wonAmount)} {ts('WON')}
+            {/* A system that paid on some columns is a partial win, and says so. */}
+            {money(wonAmount)} {ts(coupon.resultStatus)}
           </span>
         </div>
       ) : null}
