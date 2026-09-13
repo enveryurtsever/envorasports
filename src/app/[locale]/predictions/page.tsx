@@ -6,7 +6,7 @@ import {
   previousBulletinWeek,
   todayInSchedule,
 } from '@/lib/schedule/bulletin-schedule';
-import { dateKeyToUtcMidnight } from '@/lib/time/zoned';
+import { addDays, dateKeyToUtcMidnight } from '@/lib/time/zoned';
 import { COUPON_CATEGORIES } from '@/lib/config/coupon-settings';
 import type { UnlockedCoupon } from '@/services/coupons/coupon-access';
 import {
@@ -66,8 +66,18 @@ export default async function PredictionsPage({
   const selectedWeek = requestedWeek === 'previous' ? 'previous' : 'current';
   const thisWeek = bulletinWeek(todayInSchedule(schedule), schedule);
   const week = selectedWeek === 'previous' ? previousBulletinWeek(thisWeek, schedule) : thisWeek;
+  /**
+   * One day of grace at the front of the current week.
+   *
+   * The week turns at midnight Istanbul, and at 00:50 on Monday the Sunday
+   * slate — matches that finished an hour or two earlier, the coupons a reader
+   * most wants to check — had already dropped off the page. The live view
+   * therefore reaches back to the last day of the previous week; the previous
+   * week's own view is unchanged.
+   */
+  const fromDate = selectedWeek === 'current' ? addDays(week.startDate, -1) : week.startDate;
   const range = {
-    from: dateKeyToUtcMidnight(week.startDate),
+    from: dateKeyToUtcMidnight(fromDate),
     to: dateKeyToUtcMidnight(week.endDate),
   };
 
@@ -89,7 +99,7 @@ export default async function PredictionsPage({
         <div className="mt-4">
           <WeekFilter
             current={selectedWeek}
-            range={{ startDate: week.startDate, endDate: week.endDate }}
+            range={{ startDate: fromDate, endDate: week.endDate }}
           />
         </div>
       </header>
