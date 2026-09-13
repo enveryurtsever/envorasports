@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db/prisma';
 import { createLogger } from '@/lib/logging/logger';
+import { HAYAL_DEFAULTS, loadHayalThresholds } from './signal';
 
 const log = createLogger('hayal:stats');
 
@@ -172,7 +173,14 @@ export interface HayalCouponReport {
   theoreticalWinRate: number | null;
   /** Flat one-unit stakes: (returns - stakes) / stakes. */
   actualRoi: number | null;
-  byVariant: Array<{ variant: string; total: number; settled: number; won: number; winRate: number | null; roi: number | null }>;
+  byVariant: Array<{
+    variant: string;
+    total: number;
+    settled: number;
+    won: number;
+    winRate: number | null;
+    roi: number | null;
+  }>;
 }
 
 function emptyRates(): Record<HayalOutcomeKey, number | null> {
@@ -209,8 +217,14 @@ function summarise(label: string, rows: Array<{ outcomes: unknown }>): CohortRep
  * Cohorts are cut on the *stored* prices rather than on the stored verdict, so
  * "under 7.00" can be asked of rows that were written when the threshold was
  * 8.00 — the question "was 8.00 the right number" needs exactly that.
+ *
+ * The first cohorts are the test actually running: the live thresholds, read
+ * at report time. The page was still cutting at 8.00 after the threshold moved
+ * to 9.50, and so showed a five-fixture cohort as the state of a test that had
+ * fifteen — the wrong test, presented as the right one.
  */
 export async function buildHayalReport(): Promise<HayalReport> {
+  const thresholds = await loadHayalThresholds();
   /**
    * One row per fixture, whatever the signal history holds.
    *
@@ -254,14 +268,42 @@ export async function buildHayalReport(): Promise<HayalReport> {
     priced.length > 0 ? priced : graded.filter((row) => row.proxyBothHalvesOdds !== null),
   );
 
+  const btts = thresholds.bttsThreshold;
+  const ht22 = thresholds.ht22Threshold;
+  const price = (value: number) => value.toFixed(2);
+
   const cohorts: CohortReport[] = [
-    summarise('BTTS both halves < 8.00', priced.filter((row) => under(row, 8))),
-    summarise('BTTS both halves < 7.00', priced.filter((row) => under(row, 7))),
     summarise(
-      'BTTS < 8.00 + HT 2-2 < 38.00',
-      priced.filter((row) => under(row, 8) && ht22Under(row, 38)),
+      `BTTS both halves < ${price(btts)}`,
+      priced.filter((row) => under(row, btts)),
+    ),
+    summarise(
+      `BTTS < ${price(btts)} + HT 2-2 < ${price(ht22)} (premium)`,
+      priced.filter((row) => under(row, btts) && ht22Under(row, ht22)),
+    ),
+    // The fixtures the signal passed over. Lift against the baseline mixes the
+    // signal into its own comparison set; against this cohort it does not.
+    summarise(
+      `BTTS both halves >= ${price(btts)} (control)`,
+      priced.filter((row) => !under(row, btts)),
     ),
   ];
+
+  // The claim as originally stated, kept so the retuned test is never
+  // mistaken for the original one.
+  const original = HAYAL_DEFAULTS.originalBttsThreshold;
+  if (original !== btts) {
+    cohorts.push(
+      summarise(
+        `BTTS both halves < ${price(original)} (as stated)`,
+        priced.filter((row) => under(row, original)),
+      ),
+      summarise(
+        `BTTS < ${price(original)} + HT 2-2 < ${price(ht22)} (as stated)`,
+        priced.filter((row) => under(row, original) && ht22Under(row, ht22)),
+      ),
+    );
+  }
 
   /**
    * The proxy, reported beside the real thing rather than mixed into it.
@@ -277,10 +319,13 @@ export async function buildHayalReport(): Promise<HayalReport> {
 
   if (withProxy.length > 0) {
     cohorts.push(
-      summarise('proxy (half x half) < 8.00', withProxy.filter((row) => proxyUnder(row, 8))),
       summarise(
-        'proxy < 8.00 + HT 2-2 < 38.00',
-        withProxy.filter((row) => proxyUnder(row, 8) && ht22Under(row, 38)),
+        `proxy (half x half) < ${price(btts)}`,
+        withProxy.filter((row) => proxyUnder(row, btts)),
+      ),
+      summarise(
+        `proxy < ${price(btts)} + HT 2-2 < ${price(ht22)}`,
+        withProxy.filter((row) => proxyUnder(row, btts) && ht22Under(row, ht22)),
       ),
     );
   }
@@ -342,10 +387,7 @@ async function buildCouponReport(): Promise<HayalCouponReport> {
   const won = settled.filter((c) => c.resultStatus === 'WON');
 
   const stake = settled.length;
-  const returns = won.reduce(
-    (sum, c) => sum + Number(c.effectiveOdds ?? c.totalOdds),
-    0,
-  );
+  const returns = won.reduce((sum, c) => sum + Number(c.effectiveOdds ?? c.totalOdds), 0);
 
   const byVariantMap = new Map<string, typeof coupons>();
   for (const coupon of coupons) {

@@ -53,9 +53,10 @@ export interface HayalBacktestResult {
 }
 
 const DEFAULT_THRESHOLDS = [
-  { label: 'BTTS both halves < 8.00', btts: 8 },
-  { label: 'BTTS both halves < 7.00', btts: 7 },
-  { label: 'BTTS < 8.00 + HT 2-2 < 38.00', btts: 8, ht22: 38 },
+  { label: 'BTTS both halves < 9.50', btts: 9.5 },
+  { label: 'BTTS < 9.50 + HT 2-2 < 38.00', btts: 9.5, ht22: 38 },
+  { label: 'BTTS both halves < 8.00 (as stated)', btts: 8 },
+  { label: 'BTTS < 8.00 + HT 2-2 < 38.00 (as stated)', btts: 8, ht22: 38 },
 ];
 
 function rates(rows: HayalOutcomes[]): Record<HayalOutcomeKey, number | null> {

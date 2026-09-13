@@ -38,6 +38,8 @@ export const HAYAL_DEFAULTS = {
    * no earlier verdict is rewritten.
    */
   bttsThreshold: 9.5,
+  /** The number the claim was stated with. The report keeps a cohort at it. */
+  originalBttsThreshold: 8,
   /** "HT 2-2 < 38.00" as stated. Fires on 21.5% of quotes; left alone. */
   ht22Threshold: 38,
 } as const;
@@ -128,8 +130,7 @@ export function judge(
         ? { price: proxyBothHalvesOdds, source: 'PROXY' as const }
         : null;
 
-  const bttsUnderThreshold =
-    signalOdds !== null && signalOdds.price < thresholds.bttsThreshold;
+  const bttsUnderThreshold = signalOdds !== null && signalOdds.price < thresholds.bttsThreshold;
   const ht22UnderThreshold =
     input.halfTime22Odds !== null && input.halfTime22Odds < thresholds.ht22Threshold;
 
@@ -284,10 +285,13 @@ export async function detectHayalSignals(options: {
     },
   });
   const latestByMatch = new Map<string, (typeof previous)[number]>();
-  for (const row of previous) if (!latestByMatch.has(row.matchId)) latestByMatch.set(row.matchId, row);
+  for (const row of previous)
+    if (!latestByMatch.has(row.matchId)) latestByMatch.set(row.matchId, row);
 
   const same = (stored: Prisma.Decimal | null, fresh: number | null) =>
-    stored === null ? fresh === null : fresh !== null && Number(stored) === Number(fresh.toFixed(3));
+    stored === null
+      ? fresh === null
+      : fresh !== null && Number(stored) === Number(fresh.toFixed(3));
 
   const rows: Prisma.HayalSignalCreateManyInput[] = [];
   for (const match of matches) {
@@ -307,8 +311,7 @@ export async function detectHayalSignals(options: {
         halfTime22Odds: ht22?.price ?? null,
         bttsFirstHalfOdds: firstHalf?.price ?? null,
         bttsSecondHalfOdds: secondHalf?.price ?? null,
-        oddsCapturedAt:
-          btts?.capturedAt ?? ht22?.capturedAt ?? firstHalf?.capturedAt ?? null,
+        oddsCapturedAt: btts?.capturedAt ?? ht22?.capturedAt ?? firstHalf?.capturedAt ?? null,
       },
       thresholds,
     );
