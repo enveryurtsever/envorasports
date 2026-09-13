@@ -259,19 +259,25 @@ export async function reconcileDiscoveredFixtures(
   if (orphans.length === 0) return result;
 
   /**
-   * Only the dates with a fixture inside the next few hours, or just played.
+   * Forward, only the next few hours; backward, everything still unsettled.
    *
    * Orphans up to two days out were being re-asked every ten minutes, one
    * request per date per run, all night. An orphan that kicks off tomorrow
    * evening gains nothing from being bound at 03:00 today; it is bound when its
    * kick-off comes within reach, which is still hours before the per-fixture
    * pricing that depends on it.
+   *
+   * The backward side is not symmetric. A bound applied both ways left a
+   * fixture that had been played eleven hours earlier — with five coupon legs
+   * on it — permanently out of reach: too old for the window, and with no
+   * other route to its result. Anything already played is asked for until it
+   * settles, or until the plan stops serving its date.
    */
-  const REACH_MS = 6 * 60 * 60 * 1000;
+  const REACH_AHEAD_MS = 6 * 60 * 60 * 1000;
   const dates = [
     ...new Set(
       orphans
-        .filter((m) => Math.abs(m.scheduledKickoffUtc.getTime() - now.getTime()) <= REACH_MS)
+        .filter((m) => m.scheduledKickoffUtc.getTime() - now.getTime() <= REACH_AHEAD_MS)
         .map((m) => m.scheduledKickoffUtc.toISOString().slice(0, 10)),
     ),
   ]

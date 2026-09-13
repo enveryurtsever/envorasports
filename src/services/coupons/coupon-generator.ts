@@ -798,14 +798,35 @@ export function buildCategoryCoupons(
 // Persistence
 // ---------------------------------------------------------------------------
 
-function referenceFor(category: CouponCategory, targetDate: string, index: number): string {
-  const prefix = {
-    HIGH_CONFIDENCE: 'HC',
-    BALANCED_PICKS: 'BP',
-    HIGH_VALUE: 'HV',
-    COMBINATION_SYSTEM: 'CS',
-  }[category];
-  return `${prefix}-${targetDate}-${String(index + 1).padStart(2, '0')}`;
+const REFERENCE_PREFIX: Record<CouponCategory, string> = {
+  HIGH_CONFIDENCE: 'HC',
+  BALANCED_PICKS: 'BP',
+  HIGH_VALUE: 'HV',
+  COMBINATION_SYSTEM: 'CS',
+};
+
+/**
+ * The next free reference for a category on a date.
+ *
+ * Numbering used to restart at 01 on every run, which was safe only while a
+ * regeneration wiped every pending coupon for the date first. It no longer
+ * does — a coupon whose first match has kicked off is kept — so the next run
+ * would hand out HC-2026-09-12-01 while the surviving coupon still held it,
+ * and the whole publication failed on the unique constraint at 00:09. The
+ * number now continues from whatever the date already carries.
+ */
+async function referenceFor(category: CouponCategory, targetDate: string): Promise<string> {
+  const prefix = `${REFERENCE_PREFIX[category]}-${targetDate}-`;
+  const existing = await prisma.coupon.findMany({
+    where: { reference: { startsWith: prefix } },
+    select: { reference: true },
+  });
+  const taken = existing
+    .map((row) => Number(row.reference.slice(prefix.length)))
+    .filter((n) => Number.isInteger(n));
+  // Coupons are persisted one after another, so each call sees the last one.
+  const floor = taken.length > 0 ? Math.max(...taken) : 0;
+  return `${prefix}${String(floor + 1).padStart(2, '0')}`;
 }
 
 export interface GenerateOptions {
@@ -877,23 +898,31 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
   });
 
   /**
-   * Only coupons nothing has started on.
+   * Nothing is deleted. A published coupon stands until its result settles it.
    *
-   * A pending coupon whose first match has kicked off is no longer a draft
-   * that a regeneration may replace — it is the record of what was backed,
-   * and the only thing that can settle it is the result. Regenerating a window
-   * on the day its matches were played deleted five such coupons, with legs on
-   * three matches still to be played that evening, and produced nothing in
-   * their place because there was nothing left to build from. The outcomes of
-   * those legs can no longer be attributed to anything.
+   * Regeneration used to wipe the date's pending coupons and rebuild, which
+   * on the day a window's matches were played destroyed five coupons with legs
+   * still to be played and built nothing in their place. Now a run only fills
+   * what the date is short of: each category and each focus slate is asked for
+   * its target minus what already stands pending, so re-running on a full
+   * slate produces nothing and re-running on a gap produces the gap.
+   *
+   * The cost is that a settings change no longer replaces the live slate — the
+   * coupons already published were published, and they play out as they were.
    */
-  await prisma.coupon.deleteMany({
+  const standing = await prisma.coupon.findMany({
     where: {
       generationRunId: { in: runsForDate.map((previous) => previous.id) },
       resultStatus: 'PENDING',
-      firstKickoffUtc: { gt: asOf },
     },
+    select: { category: true, name: true },
   });
+  const standingCount = (category: CouponCategory, focusKey?: string): number =>
+    standing.filter((c) =>
+      focusKey
+        ? c.name === `focus_${focusKey}`
+        : c.category === category && !(c.name ?? '').startsWith('focus_'),
+    ).length;
 
   const perDay = options.grouping === 'PER_DAY';
   const groupKeys = perDay ? options.window.days : [options.window.startDate];
@@ -971,9 +1000,13 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     return created;
   };
 
-  for (const [category, settings] of Object.entries(options.categorySettings) as Array<
+  for (const [category, configured] of Object.entries(options.categorySettings) as Array<
     [CouponCategory, CouponCategorySettings]
   >) {
+    const settings: CouponCategorySettings = {
+      ...configured,
+      couponCount: Math.max(0, configured.couponCount - standingCount(category)),
+    };
     if (!settings.enabled || settings.couponCount === 0) {
       outcomes.push({
         category,
@@ -997,8 +1030,8 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       perDay,
     );
 
-    for (const [index, coupon] of coupons.entries()) {
-      await persistCoupon(coupon, run.id, options, index);
+    for (const coupon of coupons) {
+      await persistCoupon(coupon, run.id, options);
       couponsGenerated++;
     }
 
@@ -1021,15 +1054,15 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
    */
   // Each group gets its own block of reference numbers; two groups in the same
   // category starting from the same offset collide on the reference.
-  let focusOffset = 1000;
 
   for (const group of options.focusGroups ?? []) {
     const parent = options.categorySettings[group.category];
-    if (!parent || !parent.enabled || group.couponCount === 0) continue;
+    const wanted = Math.max(0, group.couponCount - standingCount(group.category, group.key));
+    if (!parent || !parent.enabled || wanted === 0) continue;
 
     const settings: CouponCategorySettings = {
       ...parent,
-      couponCount: group.couponCount,
+      couponCount: wanted,
       allowedMarkets: group.allowedMarkets,
       minTotalOdds: group.minTotalOdds ?? parent.minTotalOdds,
       minCombinedProbability: group.minCombinedProbability ?? parent.minCombinedProbability,
@@ -1053,7 +1086,6 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
         weights,
         groupKeys,
         group.category,
-        focusOffset,
         {
           ledger: ledgerFor(`${group.category}:${group.key}`),
           perDay,
@@ -1068,23 +1100,16 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       );
       couponsGenerated += outcome.produced;
       outcomes.push(outcome);
-      focusOffset += 100;
       continue;
     }
 
     const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys, ledgerFor(`${group.category}:${group.key}`), perDay);
 
-    for (const [index, coupon] of built.coupons.entries()) {
-      await persistCoupon(
-        { ...coupon, strategy: `focus_${group.key}` },
-        run.id,
-        options,
-        focusOffset + index,
-      );
+    for (const coupon of built.coupons) {
+      await persistCoupon({ ...coupon, strategy: `focus_${group.key}` }, run.id, options);
       couponsGenerated++;
     }
 
-    focusOffset += 100;
 
     outcomes.push({
       category: group.category,
@@ -1110,7 +1135,6 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       weights,
       groupKeys,
       sourceCategory as CouponCategory,
-      couponsGenerated,
       { ledger: ledgerFor(`${sourceCategory}:system`), perDay },
     );
     outcomes.push(systemOutcome.outcome);
@@ -1159,7 +1183,6 @@ async function persistCoupon(
   coupon: BuiltCoupon,
   runId: string,
   options: GenerateOptions,
-  index: number,
 ): Promise<string> {
   const kickoffs = coupon.selections.map((s) => s.kickoffUtc.getTime());
 
@@ -1168,7 +1191,7 @@ async function persistCoupon(
       generationRunId: runId,
       category: coupon.category,
       kind: 'STANDARD',
-      reference: referenceFor(coupon.category, coupon.targetDate, index),
+      reference: await referenceFor(coupon.category, coupon.targetDate),
       name: coupon.strategy,
       targetDate: dateKeyToUtcMidnight(coupon.targetDate),
       firstKickoffUtc: new Date(Math.min(...kickoffs)),
@@ -1220,7 +1243,6 @@ async function generateSystemCoupons(
   weights: CouponScoringWeights,
   groupKeys: LocalDateKey[],
   sourceCategory: CouponCategory,
-  referenceOffset: number,
   /**
    * Lets a focus slate be played as a system too. Surprise coupons are all
    * systems now: a straight seven-leg accumulator returns nothing unless every
@@ -1507,7 +1529,7 @@ async function generateSystemCoupons(
         risk * weights.riskPenalty,
     };
 
-    const couponId = await persistCoupon(built, runId, options, referenceOffset + produced);
+    const couponId = await persistCoupon(built, runId, options);
     await prisma.coupon.update({ where: { id: couponId }, data: { kind: 'SYSTEM' } });
 
     const couponSelections = await prisma.couponSelection.findMany({
