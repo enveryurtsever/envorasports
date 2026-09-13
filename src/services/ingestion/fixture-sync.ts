@@ -168,6 +168,16 @@ export async function syncFixturesByExternalIds(externalIds: string[]): Promise<
   return getFootballProvider().getFixturesByIds(externalIds);
 }
 
+/** States the result sync owns: it alone writes them, with the score. */
+function isFinalStatus(status: ProviderFixture['status']): boolean {
+  return (
+    status === 'FINISHED' ||
+    status === 'AWARDED' ||
+    status === 'CANCELED' ||
+    status === 'ABANDONED'
+  );
+}
+
 async function upsertFixture(
   fixture: ProviderFixture,
   leagueId: string,
@@ -217,11 +227,24 @@ async function upsertFixture(
   await prisma.match.upsert({
     where: { source_externalId: { source: fixture.source, externalId: fixture.externalId } },
     update: {
-      // Kickoff times move; status and score are owned by the result sync but
-      // a fixture refresh may legitimately carry them too.
+      /**
+       * Kickoff times move and pre-match status can change here; a final
+       * status may not.
+       *
+       * A fixture refresh that ran after the day's matches wrote FINISHED from
+       * the provider's FT without the score that goes with it — this update
+       * never carried goals — and the result sync then never looked at those
+       * rows again, because it only asks about matches that are not yet
+       * final. 176 matches on one day, with coupon legs on eleven of them, sat
+       * finished and scoreless and could not be settled. Finishing a match is
+       * the result sync's job: it writes the score, the half-time score, the
+       * finish time, and it triggers settlement. This refresh leaves a final
+       * status for that path to apply.
+       */
       scheduledKickoffUtc: fixture.kickoffUtc,
-      status: fixture.status,
-      providerStatus: fixture.rawStatus,
+      ...(isFinalStatus(fixture.status)
+        ? {}
+        : { status: fixture.status, providerStatus: fixture.rawStatus }),
       venue: fixture.venue,
       referee: fixture.referee,
       round: fixture.round,
