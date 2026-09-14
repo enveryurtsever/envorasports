@@ -47,7 +47,9 @@ export const couponCategorySettingsSchema = z
     maxTotalOdds: z.number().min(1).max(100_000).nullable(),
 
     // A single-match coupon is just a bet; the product does not offer one.
-    minSelections: z.number().int().min(2).max(20),
+    // One is a single, which is what a banko is; the floor was two while every
+    // category was a parlay by definition.
+    minSelections: z.number().int().min(1).max(20),
     maxSelections: z.number().int().min(1).max(20),
 
     minConfidence: probability,
@@ -433,10 +435,32 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
      * 55% floor — 65% caps out at 1.80. Raise the floor and the odds ceiling
      * comes down with it; there is no setting where both go up.
      */
-    minTotalOdds: 2,
+    /**
+
+     * A banko is one pick, not a parlay.
+
+     *
+
+     * As a two-leg coupon the category came in 4 of 10 this week. Two legs at
+
+     * 75% each land together 56% of the time, at 65% only 42% — the structure
+
+     * could never deliver what the name promises. Measured as single selections
+
+     * over the same week, picks the model rates 75% or better came in 14 of 16;
+
+     * the 60–70 band the old floor drew from came in 13 of 24. One selection at
+
+     * 75% or better is what the word means, and a reader who wants to combine
+
+     * them can.
+
+     */
+
+    minTotalOdds: 1.2,
     maxTotalOdds: 4,
-    minSelections: 2,
-    maxSelections: 6,
+    minSelections: 1,
+    maxSelections: 1,
     minConfidence: 0.6,
     // A Banko is heavy favourites at short prices. Demanding edge on top of
     // that is what emptied the category: the market prices a 92% shot keenly,
