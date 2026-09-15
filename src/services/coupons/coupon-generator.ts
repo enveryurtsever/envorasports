@@ -59,6 +59,16 @@ export interface Candidate {
   targetDate: LocalDateKey;
   /** The league's archive code (E0, NOR1, ...), for slates scoped to leagues. */
   leagueCode: string | null;
+  /**
+   * home|away|date — the fixture itself, whichever row it came from.
+   *
+   * A fixture discovered from the odds provider and the same fixture from
+   * the football provider are two match rows until they are reconciled after
+   * kick-off, and both carry predictions. Counting exposure by matchId let
+   * Elche–Real Madrid sit on nine coupons while each of its two rows looked
+   * within the cap of two.
+   */
+  fixtureKey: string;
 }
 
 export interface BuiltCoupon {
@@ -193,7 +203,14 @@ export async function loadCandidates(
       dataQualityScore: true,
       market: { select: { code: true } },
       selection: { select: { code: true } },
-      match: { select: { scheduledKickoffUtc: true, league: { select: { csvDivision: true } } } },
+      match: {
+        select: {
+          scheduledKickoffUtc: true,
+          homeTeamId: true,
+          awayTeamId: true,
+          league: { select: { csvDivision: true } },
+        },
+      },
     },
   });
 
@@ -220,6 +237,7 @@ export async function loadCandidates(
       dataQuality: Number(p.dataQualityScore),
       kickoffUtc: p.match.scheduledKickoffUtc,
       leagueCode: p.match.league.csvDivision,
+      fixtureKey: `${p.match.homeTeamId}|${p.match.awayTeamId}|${p.match.scheduledKickoffUtc.toISOString().slice(0, 10)}`,
       targetDate: localDateKey(p.match.scheduledKickoffUtc, timezone),
     }));
 }
@@ -924,8 +942,44 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       generationRunId: { in: runsForDate.map((previous) => previous.id) },
       resultStatus: 'PENDING',
     },
-    select: { category: true, name: true },
+    select: {
+      category: true,
+      name: true,
+      selections: {
+        select: {
+          match: { select: { homeTeamId: true, awayTeamId: true, scheduledKickoffUtc: true } },
+        },
+      },
+    },
   });
+  const fixtureKeyOf = (m: { homeTeamId: string; awayTeamId: string; scheduledKickoffUtc: Date }) =>
+    `${m.homeTeamId}|${m.awayTeamId}|${m.scheduledKickoffUtc.toISOString().slice(0, 10)}`;
+
+  /**
+   * How many coupons on the slate a single match may sit on.
+   *
+   * Levante–Barcelona was on ten: Under 4.5 in Banko, Dengeli and the
+   * tenfold, Under 3.5 in a surprise system, Under 2.5 in six combination
+   * systems. It finished 2-4 and all ten lost. Every category has its own
+   * one-selection-per-match rule and its own ledger; nothing looked across
+   * them, so one opinion — and a wrong one — became the whole slate's
+   * opinion. Two is the ceiling now, counted across every category and
+   * every slate, including what already stands pending for the date.
+   */
+  const MAX_COUPONS_PER_MATCH = 2;
+  const exposure = new Map<string, number>();
+  for (const coupon of standing) {
+    for (const key of new Set(coupon.selections.map((s) => fixtureKeyOf(s.match)))) {
+      exposure.set(key, (exposure.get(key) ?? 0) + 1);
+    }
+  }
+  const underCap = (pool: Candidate[]): Candidate[] =>
+    pool.filter((c) => (exposure.get(c.fixtureKey) ?? 0) < MAX_COUPONS_PER_MATCH);
+  const noteExposure = (coupon: BuiltCoupon): void => {
+    for (const key of new Set(coupon.selections.map((s) => s.fixtureKey))) {
+      exposure.set(key, (exposure.get(key) ?? 0) + 1);
+    }
+  };
   const standingCount = (category: CouponCategory, focusKey?: string): number =>
     standing.filter((c) =>
       focusKey
@@ -1030,7 +1084,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     if (category === 'COMBINATION_SYSTEM') continue; // handled separately
 
     const { coupons, poolSize, shortfallReason } = buildCategoryCoupons(
-      candidates,
+      underCap(candidates),
       settings,
       matrix,
       weights,
@@ -1041,6 +1095,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
 
     for (const coupon of coupons) {
       await persistCoupon(coupon, run.id, options);
+      noteExposure(coupon);
       couponsGenerated++;
     }
 
@@ -1089,8 +1144,8 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     if (group.system) {
       // Played as a system: the same narrowed markets, but returning on k of n
       // rather than only when every leg lands.
-      const { outcome } = await generateSystemCoupons(
-        candidates,
+      const { outcome, persisted } = await generateSystemCoupons(
+        underCap(candidates),
         matrix,
         options,
         run.id,
@@ -1111,13 +1166,15 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
       );
       couponsGenerated += outcome.produced;
       outcomes.push(outcome);
+      for (const built of persisted) noteExposure(built);
       continue;
     }
 
-    const built = buildCategoryCoupons(candidates, settings, matrix, weights, groupKeys, ledgerFor(`${group.category}:${group.key}`), perDay);
+    const built = buildCategoryCoupons(underCap(candidates), settings, matrix, weights, groupKeys, ledgerFor(`${group.category}:${group.key}`), perDay);
 
     for (const coupon of built.coupons) {
       await persistCoupon({ ...coupon, strategy: `focus_${group.key}` }, run.id, options);
+      noteExposure(coupon);
       couponsGenerated++;
     }
 
@@ -1138,9 +1195,10 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
   {
     const wanted = Math.max(0, SINGLE_MATCH_SURPRISE.count - standingCount('HIGH_VALUE', 'single_match'));
     if (wanted > 0 && options.categorySettings.HIGH_VALUE?.enabled) {
-      const stacks = buildSingleMatchStacks(candidates, { ...SINGLE_MATCH_SURPRISE, count: wanted, asOf });
+      const stacks = buildSingleMatchStacks(underCap(candidates), { ...SINGLE_MATCH_SURPRISE, count: wanted, asOf });
       for (const stack of stacks) {
         await persistCoupon(stack, run.id, options);
+        noteExposure(stack);
         couponsGenerated++;
       }
       outcomes.push({
@@ -1158,7 +1216,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     if (!settings) continue;
 
     const systemOutcome = await generateSystemCoupons(
-      candidates,
+      underCap(candidates),
       matrix,
       options,
       run.id,
@@ -1169,6 +1227,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     );
     outcomes.push(systemOutcome.outcome);
     couponsGenerated += systemOutcome.produced;
+    for (const built of systemOutcome.persisted) noteExposure(built);
   }
 
   await prisma.couponGenerationRun.update({
@@ -1292,7 +1351,7 @@ async function generateSystemCoupons(
     /** False when a slate may draw across the whole coverage window. */
     perDay?: boolean;
   } = {},
-): Promise<{ outcome: CategoryOutcome; produced: number }> {
+): Promise<{ outcome: CategoryOutcome; produced: number; persisted: BuiltCoupon[] }> {
   const baseSystem = options.systemSettings;
   const system = {
     ...baseSystem,
@@ -1317,13 +1376,13 @@ async function generateSystemCoupons(
 
   if (!system.enabled || system.couponCount === 0) {
     outcome.shortfallReason = 'systems_disabled';
-    return { outcome, produced: 0 };
+    return { outcome, produced: 0, persisted: [] as BuiltCoupon[] };
   }
 
   const sizes = parseSystemSizes(system.defaultSystemType);
   if (sizes.length === 0) {
     outcome.shortfallReason = 'invalid_system_type';
-    return { outcome, produced: 0 };
+    return { outcome, produced: 0, persisted: [] as BuiltCoupon[] };
   }
   const smallestSize = sizes[0] as number;
 
@@ -1332,9 +1391,10 @@ async function generateSystemCoupons(
 
   if (pool.length < system.minBaseSelections) {
     outcome.shortfallReason = 'insufficient_candidates_for_base_set';
-    return { outcome, produced: 0 };
+    return { outcome, produced: 0, persisted: [] as BuiltCoupon[] };
   }
 
+  const persisted: BuiltCoupon[] = [];
   let produced = 0;
 
   /**
@@ -1560,6 +1620,7 @@ async function generateSystemCoupons(
     };
 
     const couponId = await persistCoupon(built, runId, options);
+    persisted.push(built);
     await prisma.coupon.update({ where: { id: couponId }, data: { kind: 'SYSTEM' } });
 
     const couponSelections = await prisma.couponSelection.findMany({
@@ -1634,5 +1695,5 @@ async function generateSystemCoupons(
     outcome.shortfallReason = 'insufficient_candidates_for_base_set';
   }
 
-  return { outcome, produced };
+  return { outcome, produced, persisted };
 }

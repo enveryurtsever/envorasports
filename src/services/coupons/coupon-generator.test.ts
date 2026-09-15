@@ -34,6 +34,7 @@ function candidate(overrides: Partial<Candidate> & { id: string }): Candidate {
     kickoffUtc: overrides.kickoffUtc ?? kickoff,
     targetDate: overrides.targetDate ?? '2026-09-05',
     leagueCode: 'E0',
+    fixtureKey: overrides.matchId ?? `match-${overrides.id}`,
   };
 }
 

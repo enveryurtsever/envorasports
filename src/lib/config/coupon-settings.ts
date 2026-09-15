@@ -435,32 +435,33 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
      * 55% floor — 65% caps out at 1.80. Raise the floor and the odds ceiling
      * comes down with it; there is no setting where both go up.
      */
+
     /**
 
-     * A banko is one pick, not a parlay.
+     * Three near-certainties, not one and not a guess.
 
      *
 
-     * As a two-leg coupon the category came in 4 of 10 this week. Two legs at
+     * As a two-leg coupon drawn from the 60–70 band the category came in 4 of
 
-     * 75% each land together 56% of the time, at 65% only 42% — the structure
+     * 10; measured as single selections that band lands 54% of the time, so two
 
-     * could never deliver what the name promises. Measured as single selections
+     * of them together land 29%. A single at 75% or better lands 87.5% but pays
 
-     * over the same week, picks the model rates 75% or better came in 14 of 16;
+     * 1.34, which nobody plays. The measured middle: legs the model rates 75%
 
-     * the 60–70 band the old floor drew from came in 13 of 24. One selection at
+     * or better at odds of 1.20 or more land 85% each and three together 61%,
 
-     * 75% or better is what the word means, and a reader who wants to combine
+     * at about 2.7 — the old Banko's payout at twice its hit rate. The 2.0
 
-     * them can.
+     * floor keeps the 1.10 singles out.
 
      */
 
-    minTotalOdds: 1.2,
+    minTotalOdds: 2,
     maxTotalOdds: 4,
-    minSelections: 1,
-    maxSelections: 1,
+    minSelections: 2,
+    maxSelections: 3,
     minConfidence: 0.6,
     // A Banko is heavy favourites at short prices. Demanding edge on top of
     // that is what emptied the category: the market prices a 92% shot keenly,
