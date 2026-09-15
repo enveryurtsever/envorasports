@@ -87,6 +87,12 @@ export function pollIntervalMinutes(
  */
 const PLAN_WINDOW_SETTING = 'sync.planDateOffsets';
 
+/**
+ * When each date was last fetched for results. In memory: a restart at worst
+ * allows one extra fetch, which is nothing against the six an hour this stops.
+ */
+const lastDateFetchAt = new Map<string, number>();
+
 interface PlanWindow {
   /** Days back from today the plan will serve, as a negative number or zero. */
   from: number;
@@ -525,15 +531,32 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
    * evening's kick-offs. Before kick-off a result fetch can only report a
    * postponement, and the near-kickoff window is early enough to catch one.
    */
-  // Three hours: the same boundary pollIntervalMinutes uses for "approaching".
-  const APPROACHING_MS = 180 * 60_000;
+  /**
+   * Only dates with a match already under way, and each at most once per
+   * quarter hour.
+   *
+   * "Within three hours of kick-off" was the previous gate, and with fixtures
+   * spread across a day it was open from mid-morning on: every ten-minute run
+   * fetched the day again — the same list, unchanged — six times an hour for
+   * the rest of the day. Ninety-four fixture calls on one Tuesday, the budget
+   * gone by noon, and the evening's matches, Banko legs among them, left
+   * unsettled until midnight.
+   *
+   * Before kick-off there is no result to fetch. After it, the day's list
+   * changes at the pace matches finish, which fifteen minutes covers.
+   */
+  const REFETCH_MS = 15 * 60_000;
   const worthFetching = new Set(
     due
-      .filter((match) => match.scheduledKickoffUtc.getTime() - now.getTime() <= APPROACHING_MS)
+      .filter((match) => match.scheduledKickoffUtc.getTime() <= now.getTime())
       .map((match) => match.scheduledKickoffUtc.toISOString().slice(0, 10)),
   );
 
-  const dateKeys = [...worthFetching].filter((key) => key >= earliest).sort().reverse();
+  const dateKeys = [...worthFetching]
+    .filter((key) => key >= earliest)
+    .filter((key) => now.getTime() - (lastDateFetchAt.get(key) ?? 0) >= REFETCH_MS)
+    .sort()
+    .reverse();
 
   if (provider.getFixturesByDate && dateKeys.length > 0 && dateKeys.length < due.length) {
     const isServable = await servableDates(now);
@@ -545,6 +568,7 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
       try {
         fixtures = await provider.getFixturesByDate(new Date(`${dateKey}T00:00:00.000Z`));
         result.requestsSpent++;
+        lastDateFetchAt.set(dateKey, now.getTime());
       } catch (error) {
         await learnPlanWindow(error, now);
         log.error('result date fetch failed', { date: dateKey, error: String(error) });
