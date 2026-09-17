@@ -242,13 +242,20 @@ export async function reconcileDiscoveredFixtures(
       // Only dates the plan will serve; older ones can never be reconciled
       // this way and are left for a manual import.
       scheduledKickoffUtc: {
-        gte: new Date(now.getTime() - horizonDays * 864e5),
+        // Back a fortnight, not the plan's two days: the provider fetch below
+        // is bounded by what the plan serves, but the local-twin pass above
+        // it needs no provider at all, and an orphan four days old with a
+        // finished twin beside it was left out of the candidate set entirely.
+        gte: new Date(now.getTime() - 14 * 864e5),
         lte: new Date(now.getTime() + horizonDays * 864e5),
       },
     },
     select: {
       id: true,
+      source: true,
       scheduledKickoffUtc: true,
+      homeTeamId: true,
+      awayTeamId: true,
       /**
        * Aliases as well as the name.
        *
@@ -265,6 +272,71 @@ export async function reconcileDiscoveredFixtures(
   });
   result.candidates = orphans.length;
   if (orphans.length === 0) return result;
+
+  /**
+   * A twin we already hold needs no request.
+   *
+   * The football provider's own row for the same fixture — same two teams,
+   * kick-off within two hours — is often already in the table, and once it
+   * has finished it carries the score. Reconciliation only noticed such twins
+   * as a by-product of a date fetch, so an orphan whose date had slipped out
+   * of the plan's window was stuck for good beside a finished twin: Avellino–
+   * Palermo sat SCHEDULED with eight coupon legs on it while its twin read
+   * 1-1, and eleven coupons waited on it and one other. Local first, always.
+   */
+  const remaining: typeof orphans = [];
+  for (const orphan of orphans) {
+    const twin = await prisma.match.findFirst({
+      where: {
+        // Any source that carries a final result: the football provider's own
+        // row, or the archive's, which arrives weekly and is the only route
+        // left once a date has slipped out of the plan's window.
+        source: { not: orphan.source },
+        status: { in: ['FINISHED', 'AWARDED', 'CANCELED', 'ABANDONED', 'POSTPONED'] },
+        homeTeamId: orphan.homeTeamId,
+        awayTeamId: orphan.awayTeamId,
+        // The same two teams do not meet twice in a day, so the day is the
+        // match: the odds provider listed Avellino–Palermo at 13:00 and the
+        // football provider at 15:15, and a two-hour tolerance missed the
+        // twin by a quarter of an hour.
+        scheduledKickoffUtc: {
+          gte: new Date(orphan.scheduledKickoffUtc.getTime() - 12 * 3600 * 1000),
+          lte: new Date(orphan.scheduledKickoffUtc.getTime() + 12 * 3600 * 1000),
+        },
+      },
+      select: {
+        status: true,
+        providerStatus: true,
+        homeScore: true,
+        awayScore: true,
+        halfTimeHomeScore: true,
+        halfTimeAwayScore: true,
+        finishedAtUtc: true,
+      },
+    });
+    if (!twin || (twin.status === 'FINISHED' && twin.homeScore === null)) {
+      remaining.push(orphan);
+      continue;
+    }
+    await prisma.match.update({
+      where: { id: orphan.id },
+      data: {
+        status: twin.status,
+        providerStatus: twin.providerStatus,
+        homeScore: twin.homeScore,
+        awayScore: twin.awayScore,
+        halfTimeHomeScore: twin.halfTimeHomeScore,
+        halfTimeAwayScore: twin.halfTimeAwayScore,
+        finishedAtUtc: twin.finishedAtUtc,
+        excludedFromGeneration: true,
+      },
+    });
+    result.absorbed++;
+  }
+  if (remaining.length === 0) {
+    if (result.absorbed > 0) log.info('discovered fixtures reconciled', { ...result });
+    return result;
+  }
 
   /**
    * Forward, only the next few hours; backward, everything still unsettled.
@@ -284,7 +356,7 @@ export async function reconcileDiscoveredFixtures(
   const REACH_AHEAD_MS = 6 * 60 * 60 * 1000;
   const dates = [
     ...new Set(
-      orphans
+      remaining
         .filter((m) => m.scheduledKickoffUtc.getTime() - now.getTime() <= REACH_AHEAD_MS)
         .map((m) => m.scheduledKickoffUtc.toISOString().slice(0, 10)),
     ),
@@ -322,7 +394,7 @@ export async function reconcileDiscoveredFixtures(
       continue;
     }
 
-    for (const orphan of orphans) {
+    for (const orphan of remaining) {
       if (orphan.scheduledKickoffUtc.toISOString().slice(0, 10) !== dateKey) continue;
 
       const homeNames = [orphan.homeTeam.name, ...orphan.homeTeam.aliases.map((a) => a.alias)];
