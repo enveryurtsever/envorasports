@@ -379,8 +379,8 @@ export function buildCoupon(
   const ranked = [...pool].sort((a, b) => {
     // Push the coupon toward matches and markets the earlier coupons did not
     // use, which is what makes five coupons five different coupons.
-    const noveltyA = (usedMatches.has(a.matchId) ? 0 : 0.15) + (usedMarkets.has(a.marketCode) ? 0 : 0.1);
-    const noveltyB = (usedMatches.has(b.matchId) ? 0 : 0.15) + (usedMarkets.has(b.marketCode) ? 0 : 0.1);
+    const noveltyA = (usedMatches.has(a.fixtureKey) ? 0 : 0.15) + (usedMarkets.has(a.marketCode) ? 0 : 0.1);
+    const noveltyB = (usedMatches.has(b.fixtureKey) ? 0 : 0.15) + (usedMarkets.has(b.marketCode) ? 0 : 0.1);
     return strategy.rank(b) + noveltyB - (strategy.rank(a) + noveltyA);
   });
 
@@ -394,7 +394,7 @@ export function buildCoupon(
    * otherwise be filled.
    */
   const eligible = excludeUsedMatches
-    ? ranked.filter((candidate) => !usedMatches.has(candidate.matchId))
+    ? ranked.filter((candidate) => !usedMatches.has(candidate.fixtureKey))
     : ranked;
 
   const available = offset > 0 ? eligible.slice(offset) : eligible;
@@ -439,7 +439,7 @@ export function buildCoupon(
   for (const candidate of available) {
     if (chosen.length >= settings.maxSelections) break;
 
-    if (settings.oneSelectionPerMatch && chosenMatches.has(candidate.matchId)) continue;
+    if (settings.oneSelectionPerMatch && chosenMatches.has(candidate.fixtureKey)) continue;
     if (!relaxMarketMix && (marketCounts.get(candidate.marketCode) ?? 0) >= perMarketCap) continue;
 
     const correlation = maxCorrelationWith(matrix, refOf(candidate), chosen.map(refOf));
@@ -473,7 +473,7 @@ export function buildCoupon(
 
     runningProbability = nextProbability;
     chosen.push(candidate);
-    chosenMatches.add(candidate.matchId);
+    chosenMatches.add(candidate.fixtureKey);
     marketCounts.set(candidate.marketCode, (marketCounts.get(candidate.marketCode) ?? 0) + 1);
     totalOdds = nextOdds;
 
@@ -603,14 +603,14 @@ export interface GenerationLedger {
 function fixtureOverlap(candidate: BuiltCoupon, existing: BuiltCoupon[]): number {
   if (existing.length === 0) return 0;
 
-  const fixtures = new Set(candidate.selections.map((s) => s.matchId));
+  const fixtures = new Set(candidate.selections.map((s) => s.fixtureKey));
   if (fixtures.size === 0) return 0;
 
   let worst = 0;
   for (const coupon of existing) {
     let shared = 0;
     for (const selection of coupon.selections) {
-      if (fixtures.has(selection.matchId)) shared++;
+      if (fixtures.has(selection.fixtureKey)) shared++;
     }
     worst = Math.max(worst, shared / fixtures.size);
   }
@@ -692,7 +692,7 @@ export function buildCategoryCoupons(
 
       coupons.push(coupon);
       coupon.selections.forEach((s) => {
-        usedMatches.add(s.matchId);
+        usedMatches.add(s.fixtureKey);
         usedMarkets.add(s.marketCode);
       });
     }
@@ -765,7 +765,7 @@ export function buildCategoryCoupons(
 
         coupons.push(coupon);
         coupon.selections.forEach((s) => {
-          usedMatches.add(s.matchId);
+          usedMatches.add(s.fixtureKey);
           usedMarkets.add(s.marketCode);
         });
       }
@@ -803,9 +803,9 @@ export function buildCategoryCoupons(
 
   for (const coupon of coupons) {
     if (chosen.length >= settings.couponCount) break;
-    if (coupon.selections.some((s) => spokenFor.has(s.matchId))) continue;
+    if (coupon.selections.some((s) => spokenFor.has(s.fixtureKey))) continue;
     chosen.push(coupon);
-    coupon.selections.forEach((s) => spokenFor.add(s.matchId));
+    coupon.selections.forEach((s) => spokenFor.add(s.fixtureKey));
   }
 
   for (const coupon of coupons) {
@@ -1475,7 +1475,7 @@ async function generateSystemCoupons(
      * shifted by one.
      */
     const fresh =
-      round > 0 ? dayPool : dayPool.filter((c) => !slateMatches.has(c.matchId));
+      round > 0 ? dayPool : dayPool.filter((c) => !slateMatches.has(c.fixtureKey));
     const groupPool = pass === 0 ? fresh : fresh.slice(pass);
 
     const base: Candidate[] = [];
@@ -1483,12 +1483,12 @@ async function generateSystemCoupons(
 
     for (const candidate of groupPool) {
       if (base.length >= system.maxBaseSelections) break;
-      if (system.oneSelectionPerMatch && usedMatches.has(candidate.matchId)) continue;
+      if (system.oneSelectionPerMatch && usedMatches.has(candidate.fixtureKey)) continue;
       if (maxCorrelationWith(matrix, refOf(candidate), base.map(refOf)) > system.maxCorrelation) {
         continue;
       }
       base.push(candidate);
-      usedMatches.add(candidate.matchId);
+      usedMatches.add(candidate.fixtureKey);
     }
 
     if (base.length < system.minBaseSelections || base.length < Math.max(...sizes)) continue;
@@ -1499,7 +1499,7 @@ async function generateSystemCoupons(
       .join('|');
     if (slateSignatures.has(signature)) continue;
 
-    const fixtures = new Set(base.map((c) => c.matchId));
+    const fixtures = new Set(base.map((c) => c.fixtureKey));
     const maxOverlap = ROUND_MAX_OVERLAP[round] ?? 1;
     const worstOverlap = slateFixtureSets.reduce((worst, previous) => {
       let shared = 0;
@@ -1683,8 +1683,8 @@ async function generateSystemCoupons(
 
     produced++;
     base.forEach((c) => {
-      slateMatches.add(c.matchId);
-      override?.ledger?.usedMatches.add(c.matchId);
+      slateMatches.add(c.fixtureKey);
+      override?.ledger?.usedMatches.add(c.fixtureKey);
       override?.ledger?.usedMarkets.add(c.marketCode);
     });
     }
