@@ -8,7 +8,7 @@ import { getAppSetting } from '@/lib/config/settings-service';
 import { getEloForTeams, expectedScore, DEFAULT_ELO_CONFIG } from '@/services/features/elo';
 import { getLeagueAverages, getTeamForm, persistFormSnapshot, type TeamFormBundle } from '@/services/features/form';
 import { runEloModel } from '@/lib/models/elo-model';
-import { runPoissonModel } from '@/lib/models/poisson-model';
+import { poissonLambdas, runPoissonModel } from '@/lib/models/poisson-model';
 import { runFormModel } from '@/lib/models/form-model';
 import { runXgModel } from '@/lib/models/xg-model';
 import { runEnsemble } from '@/lib/models/ensemble';
@@ -412,16 +412,59 @@ export function readModelConfiguration(configuration: unknown): ModelConfigurati
  * the backtest does not. Sharing this function is what guarantees a backtest
  * measures the same model the product actually ships (§37).
  */
+/** Last meetings between the two sides, either venue, before the cut-off. */
+const HEAD_TO_HEAD_MEETINGS = 5;
+const HEAD_TO_HEAD_YEARS = 4;
+
+export async function getHeadToHead(
+  homeTeamId: string,
+  awayTeamId: string,
+  asOf: Date,
+): Promise<{ averageTotalGoals: number; sampleSize: number } | null> {
+  const meetings = await prisma.match.findMany({
+    where: {
+      status: { in: ['FINISHED', 'AWARDED'] },
+      homeScore: { not: null },
+      awayScore: { not: null },
+      scheduledKickoffUtc: {
+        lt: asOf,
+        gte: new Date(asOf.getTime() - HEAD_TO_HEAD_YEARS * 365 * 864e5),
+      },
+      OR: [
+        { homeTeamId, awayTeamId },
+        { homeTeamId: awayTeamId, awayTeamId: homeTeamId },
+      ],
+    },
+    orderBy: { scheduledKickoffUtc: 'desc' },
+    take: HEAD_TO_HEAD_MEETINGS * 2,
+    select: { homeScore: true, awayScore: true, homeTeamId: true, awayTeamId: true, scheduledKickoffUtc: true },
+  });
+
+  // Providers file the same meeting twice; one row per calendar day.
+  const seen = new Set<string>();
+  const distinct = meetings.filter((m) => {
+    const key = `${m.homeTeamId}|${m.awayTeamId}|${m.scheduledKickoffUtc.toISOString().slice(0, 10)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, HEAD_TO_HEAD_MEETINGS);
+
+  if (distinct.length === 0) return null;
+  const goals = distinct.reduce((sum, m) => sum + (m.homeScore ?? 0) + (m.awayScore ?? 0), 0);
+  return { averageTotalGoals: goals / distinct.length, sampleSize: distinct.length };
+}
+
 export async function computeMatchPrediction(
   match: MatchPredictionInput,
   asOf: Date,
   config: ModelConfiguration,
   leagueAverages: { homeGoals: number; awayGoals: number; sampleSize: number },
 ): Promise<MatchPrediction | null> {
-  const [homeForm, awayForm, elo] = await Promise.all([
+  const [homeForm, awayForm, elo, headToHead] = await Promise.all([
     getTeamForm(match.homeTeamId, asOf),
     getTeamForm(match.awayTeamId, asOf),
     getEloForTeams([match.homeTeamId, match.awayTeamId], asOf, config.elo),
+    getHeadToHead(match.homeTeamId, match.awayTeamId, asOf),
   ]);
 
   if (!homeForm.hasUsableSample && !awayForm.hasUsableSample) return null;
@@ -468,6 +511,32 @@ export async function computeMatchPrediction(
 
   const strengths = buildAttackDefence(homeForm, awayForm, leagueAverages, cross);
 
+  /**
+   * A cup tie is scored at the rate of the leagues the two sides come from,
+   * not at the cup's own. The cup's baseline is a handful of matches a
+   * season, and a ratio earned in Serie A means nothing multiplied by it.
+   */
+  const baseline = cross
+    ? {
+        homeGoals: (cross.homeLeague.homeGoals + cross.awayLeague.homeGoals) / 2,
+        awayGoals: (cross.homeLeague.awayGoals + cross.awayLeague.awayGoals) / 2,
+      }
+    : leagueAverages;
+
+  const poissonInput = {
+    ...strengths,
+    leagueHomeGoals: baseline.homeGoals,
+    leagueAwayGoals: baseline.awayGoals,
+    homeSampleSize: homeForm.windows.LAST_10.sampleSize,
+    awaySampleSize: awayForm.windows.LAST_10.sampleSize,
+    shrinkage: config.poisson.shrinkage,
+    maxGoals: config.poisson.maxGoals,
+    headToHead,
+  };
+  // Every model spreads its result over the same expected goals: the sides'
+  // own, not the league's.
+  const expected = poissonLambdas(poissonInput);
+
   const models: ModelOutput[] = [
     runEloModel({
       homeRating: homeElo.rating + homeStrength,
@@ -475,17 +544,9 @@ export async function computeMatchPrediction(
       homeMatchesPlayed: homeElo.matchesPlayed,
       awayMatchesPlayed: awayElo.matchesPlayed,
       homeAdvantage: config.elo.homeAdvantage,
-      expectedTotalGoals: leagueAverages.homeGoals + leagueAverages.awayGoals,
+      expectedTotalGoals: expected.lambdaHome + expected.lambdaAway,
     }),
-    runPoissonModel({
-      ...strengths,
-      leagueHomeGoals: leagueAverages.homeGoals,
-      leagueAwayGoals: leagueAverages.awayGoals,
-      homeSampleSize: homeForm.windows.LAST_10.sampleSize,
-      awaySampleSize: awayForm.windows.LAST_10.sampleSize,
-      shrinkage: config.poisson.shrinkage,
-      maxGoals: config.poisson.maxGoals,
-    }),
+    runPoissonModel(poissonInput),
     runFormModel({ home: homeForm, away: awayForm, venueWeight: 0.6 }),
     runXgModel({
       home: homeForm,

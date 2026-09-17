@@ -299,13 +299,26 @@ export async function getLeagueAverages(
     select: { homeScore: true, awayScore: true },
   });
 
-  if (matches.length === 0) {
-    // Long-run football averages, used only until a league has its own history.
-    return { homeGoals: 1.5, awayGoals: 1.15, sampleSize: 0 };
-  }
+  /**
+   * Shrunk toward the long-run football average while the sample is thin.
+   *
+   * Three Europa League matches this season averaged 0.67 home goals and
+   * 1.33 away, and every cup tie was then priced against that: Juventus'
+   * attack, measured against Serie A, multiplied by 0.67 gave a 1.6-goal
+   * match the market had at three. Fifty matches is where the league's own
+   * number starts to outweigh the prior; at 400 it is nearly all its own.
+   */
+  const PRIOR = { homeGoals: 1.5, awayGoals: 1.15 };
+  const PRIOR_WEIGHT_MATCHES = 50;
+  if (matches.length === 0) return { ...PRIOR, sampleSize: 0 };
 
-  const homeGoals = matches.reduce((sum, m) => sum + (m.homeScore as number), 0) / matches.length;
-  const awayGoals = matches.reduce((sum, m) => sum + (m.awayScore as number), 0) / matches.length;
+  const own = matches.length / (matches.length + PRIOR_WEIGHT_MATCHES);
+  const meanHome = matches.reduce((sum, m) => sum + (m.homeScore as number), 0) / matches.length;
+  const meanAway = matches.reduce((sum, m) => sum + (m.awayScore as number), 0) / matches.length;
 
-  return { homeGoals, awayGoals, sampleSize: matches.length };
+  return {
+    homeGoals: meanHome * own + PRIOR.homeGoals * (1 - own),
+    awayGoals: meanAway * own + PRIOR.awayGoals * (1 - own),
+    sampleSize: matches.length,
+  };
 }

@@ -22,6 +22,46 @@ export interface PoissonModelInput {
   /** 0..1 — how hard to pull small samples toward the league average. */
   shrinkage: number;
   maxGoals: number;
+  /**
+   * What these two sides do to each other, from their recent meetings.
+   *
+   * Attack and defence ratios describe each side against the league; a
+   * head-to-head describes the pairing, which the ratios cannot see — some
+   * pairings are open every time they meet, some never are. It is a small
+   * sample by nature, so it moves the total by at most a third of the gap and
+   * only in proportion to how many meetings there are.
+   */
+  headToHead?: { averageTotalGoals: number; sampleSize: number } | null;
+}
+
+/** Most the head-to-head may move the expected total, at a full sample. */
+const H2H_MAX_WEIGHT = 0.3;
+const H2H_FULL_SAMPLE = 5;
+/** Whatever the meetings say, the pairing does not double or halve the sides. */
+const H2H_FACTOR_BOUNDS = [0.8, 1.25] as const;
+
+export function headToHeadFactor(
+  expectedTotal: number,
+  headToHead: PoissonModelInput['headToHead'],
+): number {
+  if (!headToHead || headToHead.sampleSize <= 0 || expectedTotal <= 0) return 1;
+  const weight = H2H_MAX_WEIGHT * Math.min(1, headToHead.sampleSize / H2H_FULL_SAMPLE);
+  const blended = expectedTotal * (1 - weight) + headToHead.averageTotalGoals * weight;
+  return Math.min(H2H_FACTOR_BOUNDS[1], Math.max(H2H_FACTOR_BOUNDS[0], blended / expectedTotal));
+}
+
+/** The scoring rates the model runs on; exported so Elo can spread its result over the same goals. */
+export function poissonLambdas(input: PoissonModelInput): { lambdaHome: number; lambdaAway: number } {
+  const homeAttack = shrinkStrength(input.homeAttack, input.homeSampleSize, input.shrinkage);
+  const homeDefence = shrinkStrength(input.homeDefence, input.homeSampleSize, input.shrinkage);
+  const awayAttack = shrinkStrength(input.awayAttack, input.awaySampleSize, input.shrinkage);
+  const awayDefence = shrinkStrength(input.awayDefence, input.awaySampleSize, input.shrinkage);
+
+  // Home scoring rate = home attack x away defence x league home baseline.
+  const rawHome = Math.max(0.05, homeAttack * awayDefence * input.leagueHomeGoals);
+  const rawAway = Math.max(0.05, awayAttack * homeDefence * input.leagueAwayGoals);
+  const factor = headToHeadFactor(rawHome + rawAway, input.headToHead);
+  return { lambdaHome: rawHome * factor, lambdaAway: rawAway * factor };
 }
 
 /** Pulls a strength ratio toward 1 in proportion to how little we have seen. */
@@ -37,9 +77,7 @@ export function runPoissonModel(input: PoissonModelInput): ModelOutput {
   const awayAttack = shrinkStrength(input.awayAttack, input.awaySampleSize, input.shrinkage);
   const awayDefence = shrinkStrength(input.awayDefence, input.awaySampleSize, input.shrinkage);
 
-  // Home scoring rate = home attack x away defence x league home baseline.
-  const lambdaHome = Math.max(0.05, homeAttack * awayDefence * input.leagueHomeGoals);
-  const lambdaAway = Math.max(0.05, awayAttack * homeDefence * input.leagueAwayGoals);
+  const { lambdaHome, lambdaAway } = poissonLambdas(input);
 
   const derived = deriveMarkets(lambdaHome, lambdaAway, { maxGoals: input.maxGoals });
 
@@ -60,6 +98,8 @@ export function runPoissonModel(input: PoissonModelInput): ModelOutput {
       awayDefence: Number(awayDefence.toFixed(3)),
       leagueHomeGoals: Number(input.leagueHomeGoals.toFixed(3)),
       leagueAwayGoals: Number(input.leagueAwayGoals.toFixed(3)),
+      headToHeadGoals: input.headToHead ? Number(input.headToHead.averageTotalGoals.toFixed(2)) : null,
+      headToHeadSample: input.headToHead?.sampleSize ?? 0,
       sampleSize: sample,
     },
   };

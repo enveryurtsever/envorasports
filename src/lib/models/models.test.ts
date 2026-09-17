@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { dec } from '@/lib/math/decimal';
 import { deriveMarkets, lambdasFromOutcome } from './markets-from-matrix';
 import { runEloModel, drawProbability } from './elo-model';
-import { runPoissonModel, shrinkStrength } from './poisson-model';
+import { headToHeadFactor, poissonLambdas, runPoissonModel, shrinkStrength } from './poisson-model';
 import { runEnsemble, computeAgreement } from './ensemble';
 import { unavailable, type ModelOutput } from './types';
 import { DEFAULT_MODEL_WEIGHTS } from '@/lib/config/coupon-settings';
@@ -129,6 +129,30 @@ describe('elo model', () => {
       homeAdvantage: 65, expectedTotalGoals: 2.7,
     });
     expect(output.available).toBe(false);
+  });
+});
+
+describe('head-to-head', () => {
+  it('moves the total toward what the pairing produces, by at most a third at a full sample', () => {
+    // Sides expected to produce 2.5 that have met five times at 4.0 a game.
+    expect(headToHeadFactor(2.5, { averageTotalGoals: 4, sampleSize: 5 })).toBeCloseTo(1.18, 2);
+    // One meeting is worth a fifth of that.
+    expect(headToHeadFactor(2.5, { averageTotalGoals: 4, sampleSize: 1 })).toBeCloseTo(1.036, 2);
+    expect(headToHeadFactor(2.5, null)).toBe(1);
+    expect(headToHeadFactor(2.5, { averageTotalGoals: 4, sampleSize: 0 })).toBe(1);
+  });
+
+  it('never lets a freak scoreline double or halve the sides', () => {
+    expect(headToHeadFactor(2.0, { averageTotalGoals: 9, sampleSize: 5 })).toBe(1.25);
+    expect(headToHeadFactor(3.0, { averageTotalGoals: 0, sampleSize: 5 })).toBe(0.8);
+  });
+
+  it('scales both sides alike so the result split is untouched', () => {
+    const base = { homeAttack: 1.4, homeDefence: 0.8, awayAttack: 0.9, awayDefence: 1.2, leagueHomeGoals: 1.5, leagueAwayGoals: 1.15, homeSampleSize: 20, awaySampleSize: 20, shrinkage: 0.25, maxGoals: 8 };
+    const plain = poissonLambdas(base);
+    const open = poissonLambdas({ ...base, headToHead: { averageTotalGoals: 5, sampleSize: 5 } });
+    expect(open.lambdaHome + open.lambdaAway).toBeGreaterThan(plain.lambdaHome + plain.lambdaAway);
+    expect(open.lambdaHome / open.lambdaAway).toBeCloseTo(plain.lambdaHome / plain.lambdaAway, 6);
   });
 });
 

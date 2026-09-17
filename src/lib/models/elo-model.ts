@@ -18,7 +18,14 @@ export interface EloModelInput {
   homeMatchesPlayed: number;
   awayMatchesPlayed: number;
   homeAdvantage: number;
-  /** League scoring baseline, used to spread the result onto goals markets. */
+  /**
+   * The goals this fixture is expected to produce, used to spread the result
+   * onto the goals markets. This was the league baseline — 2.6 for every
+   * match — which put a quarter of the ensemble's totals vote on "an ordinary
+   * game" whoever was playing, and pulled Barcelona's over lines toward the
+   * middle. It is now the sides' own expected scoring, so Elo's translation
+   * of its result agrees with the goals models on how open the match is.
+   */
   expectedTotalGoals: number;
 }
 
