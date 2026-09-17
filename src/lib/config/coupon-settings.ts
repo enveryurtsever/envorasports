@@ -446,38 +446,24 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     enabled: true,
     couponCount: 3,
     /**
-     * 2.00 and a high chance pull against each other, and the pool decides
-     * where they meet. Adding legs does not help: holding a floor means every
-     * extra leg has to be shorter, and the shortening outruns the multiplying.
-     * With the handicap markets no longer offered, 2.00 is first reachable at a
-     * 55% floor — 65% caps out at 1.80. Raise the floor and the odds ceiling
-     * comes down with it; there is no setting where both go up.
-     */
-
-    /**
-
-     * Three near-certainties, not one and not a guess.
-
+     * A Banko is a coupon that lands four times in five. That is the whole
+     * definition, and every number below follows from it.
      *
-
-     * As a two-leg coupon drawn from the 60–70 band the category came in 4 of
-
-     * 10; measured as single selections that band lands 54% of the time, so two
-
-     * of them together land 29%. A single at 75% or better lands 87.5% but pays
-
-     * 1.34, which nobody plays. The measured middle: legs the model rates 75%
-
-     * or better at odds of 1.20 or more land 85% each and three together 61%,
-
-     * at about 2.7 — the old Banko's payout at twice its hit rate. The 2.0
-
-     * floor keeps the 1.10 singles out.
-
+     * The category did not land four in five. Eleven settled Banko coupons
+     * came in 4-7, and their own stated chances were 0.39-0.59: a 2.00 floor
+     * demanded two legs at about 1.41, which is a 71% shot each even when the
+     * model is right, and 50% together. The label promised what the settings
+     * could not deliver.
+     *
+     * Measured on 290 current predictions over 60 matches, the model delivers
+     * 78% in the 0.75-0.80 band, 82-88% between 0.80 and 0.90, and 94% from
+     * 0.90 up (71 predictions, 43 matches). Two legs at 0.94 land 88%
+     * together; two at 0.80 land 64%. So the floor is 0.90 a leg and 0.80 for
+     * the coupon, and the odds are whatever that leaves — about 1.15 to 1.40.
+     * A four-in-five coupon cannot pay 2.00; the market prices 80% at 1.25.
      */
-
-    minTotalOdds: 2,
-    maxTotalOdds: 4,
+    minTotalOdds: 1.2,
+    maxTotalOdds: 2,
     minSelections: 2,
     maxSelections: 3,
     minConfidence: 0.6,
@@ -487,42 +473,12 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     // never back a selection the market rates above our own model.
     minExpectedValue: NO_EDGE_REQUIREMENT,
     minEdge: NO_EDGE_REQUIREMENT,
-    /**
-
-     * 0.75, from 0.60, on measurement.
-
-     *
-
-     * Over 84 distinct coupon legs the model delivers what it promises only
-
-     * from 75% upward (84.2% promised, 85.7% delivered); every band below is
-
-     * short — 70.5% promised against 58.8% delivered in the 65–75 band, the
-
-     * one a 0.60 floor draws from most. Banko is the category that claims
-
-     * certainty, so it draws only from where the model has earned it. Fewer
-
-     * coupons, some days none; the ones built are the ones that hold.
-
-     */
-
-    minProbability: 0.75,
+    minProbability: 0.9,
     maxRisk: 0.4,
     maxCorrelation: 0.3,
     minDataQuality: 0.6,
-    /**
-     * 0.85 is the target, but it needs two legs near 92% and the priced pool
-     * tops out at 81% — one selection in sixty-seven clears 80%. Raise this
-     * once the bulletin carries short-priced favourites (Over 0.5, double
-     * chance on a heavy favourite); until then it would empty the category.
-     */
-    minCombinedProbability: 0.55,
+    minCombinedProbability: 0.8,
     oneSelectionPerMatch: true,
-    /**
-     * The safe end of the bulletin, in markets a reader already knows. 6+ goals
-     * stays out — a Banko is not built on a five-percent event.
-     */
     allowedMarkets: [
       MARKET.DOUBLE_CHANCE,
       MARKET.OVER_UNDER,

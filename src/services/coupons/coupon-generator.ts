@@ -971,13 +971,30 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
   const MAX_COUPONS_PER_MATCH = 2;
   const exposure = new Map<string, number>();
   for (const coupon of standing) {
+    if (coupon.category === 'HIGH_CONFIDENCE') continue;
     for (const key of new Set(coupon.selections.map((s) => fixtureKeyOf(s.match)))) {
       exposure.set(key, (exposure.get(key) ?? 0) + 1);
     }
   }
-  const underCap = (pool: Candidate[]): Candidate[] =>
-    pool.filter((c) => (exposure.get(c.fixtureKey) ?? 0) < MAX_COUPONS_PER_MATCH);
+  /**
+   * The Banko stands outside the cap, in both directions.
+   *
+   * The cap exists because a 60-70% opinion repeated across a slate sinks
+   * the slate when it is wrong. A Banko leg is a 90%+ event — Over 0.5,
+   * a heavy favourite not losing — and it is not the same opinion as the
+   * Under 2.5 or the HT/FT pick the other categories hold on that match.
+   * Counting it left the Banko with one eligible match on a night the
+   * surprise coupons had already spread across the fixtures, and the
+   * category that is supposed to come in four times in five produced
+   * nothing. The other categories still hold each other to two.
+   */
+  const exempt = (category: CouponCategory): boolean => category === 'HIGH_CONFIDENCE';
+  const underCap = (pool: Candidate[], category?: CouponCategory): Candidate[] =>
+    category !== undefined && exempt(category)
+      ? pool
+      : pool.filter((c) => (exposure.get(c.fixtureKey) ?? 0) < MAX_COUPONS_PER_MATCH);
   const noteExposure = (coupon: BuiltCoupon): void => {
+    if (exempt(coupon.category)) return;
     for (const key of new Set(coupon.selections.map((s) => s.fixtureKey))) {
       exposure.set(key, (exposure.get(key) ?? 0) + 1);
     }
@@ -1065,9 +1082,13 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     return created;
   };
 
-  for (const [category, configured] of Object.entries(options.categorySettings) as Array<
+  // The Banko is built first: it is the category the reader trusts, and it
+  // must not be left picking over what the others have already spread onto.
+  const ordered = (Object.entries(options.categorySettings) as Array<
     [CouponCategory, CouponCategorySettings]
-  >) {
+  >).sort(([a], [b]) => Number(b === 'HIGH_CONFIDENCE') - Number(a === 'HIGH_CONFIDENCE'));
+
+  for (const [category, configured] of ordered) {
     const settings: CouponCategorySettings = {
       ...configured,
       couponCount: Math.max(0, configured.couponCount - standingCount(category)),
@@ -1086,7 +1107,7 @@ export async function generateCoupons(options: GenerateOptions): Promise<Generat
     if (category === 'COMBINATION_SYSTEM') continue; // handled separately
 
     const { coupons, poolSize, shortfallReason } = buildCategoryCoupons(
-      underCap(candidates),
+      underCap(candidates, category),
       settings,
       matrix,
       weights,
