@@ -383,6 +383,38 @@ export const DEFAULT_FOCUS_GROUPS: CouponFocusGroup[] = [
     system: { systemType: 'SYSTEM_4_5_6', minBaseSelections: 5, maxBaseSelections: 6 },
   },
   {
+    /**
+     * The five-goal slate — what the shared winning slips are made of.
+     *
+     * A nine-leg Over 4.5 accumulator at 2.2-2.7 a leg is a 1-in-3,800 ticket,
+     * and the one that lands is the one that gets posted. What its author did
+     * right was the picking: fixtures where five goals is a live outcome, not
+     * a hope. The model can pick those too, and it under-rates them — Over
+     * 4.5 predictions at 0.25-0.35 came in 50%, at 0.35-0.45 75%, over 12
+     * settled legs; the market had them at 32% and 49%. Small numbers, one
+     * direction, the same direction Levante-Barcelona pointed.
+     *
+     * Six legs as a 2/3/4 system rather than a straight six: at 45% a leg,
+     * two of six land 77% of the time and three 47%, and every extra one
+     * multiplies. A straight six lands 0.8%.
+     */
+    key: 'goals5',
+    category: 'HIGH_VALUE',
+    couponCount: 2,
+    allowedMarkets: [MARKET.OVER_UNDER],
+    allowedSelections: ['OVER_4_5'],
+    minSelections: 5,
+    maxSelections: 6,
+    minProbability: 0.25,
+    minConfidence: 0.3,
+    minEdge: NO_EDGE_REQUIREMENT,
+    minExpectedValue: NO_EDGE_REQUIREMENT,
+    maxRisk: 0.9,
+    minTotalOdds: 5,
+    minCombinedProbability: 0,
+    system: { systemType: 'SYSTEM_2_3_4', minBaseSelections: 5, maxBaseSelections: 6 },
+  },
+  {
     key: 'htft',
     category: 'HIGH_VALUE',
     couponCount: 3,
