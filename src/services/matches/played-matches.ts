@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db/prisma';
+import { EXCLUDED_SELECTIONS } from '@/lib/config/coupon-settings';
 import { localDateKey } from '@/lib/time/zoned';
 
 /**
@@ -38,9 +39,10 @@ export interface PlayedMatch {
   awayScore: number | null;
   picks: PlayedPick[];
   /**
-   * The analysis report: the model's most likely outcome on the result, the
-   * 2.5 line and the half-time result, by its own probability — not by
-   * price, edge or value. Three calls a reader can check against the score.
+   * The analysis report: the model's three most likely calls across every
+   * market it priced, by its own probability — not by price, edge or value —
+   * one call per market, the near-certain lines left out. Whatever the model
+   * rates highest is what the reader sees, and can check against the score.
    */
   analysis: AnalysisCall[];
 }
@@ -67,19 +69,14 @@ export interface PlayedSummary {
   matchesPlayed: number;
 }
 
-/** Result, the 2.5 line, half-time result: one call each, most likely wins. */
-const ANALYSIS_GROUP: Record<string, 'result' | 'goals' | 'halfTime'> = {
-  MS_1: 'result',
-  MS_X: 'result',
-  MS_2: 'result',
-  OVER_2_5: 'goals',
-  UNDER_2_5: 'goals',
-  HT_1: 'halfTime',
-  HT_X: 'halfTime',
-  HT_2: 'halfTime',
-};
-const ANALYSIS_CODES = Object.keys(ANALYSIS_GROUP);
-const ANALYSIS_ORDER = ['result', 'goals', 'halfTime'] as const;
+/**
+ * What the report leaves out: the lines that are near-certain in every
+ * match. Over 0.5 at 96% and Under 5.5 at 94% would head every row and say
+ * nothing; the excluded unders are the ones the model has been shown to
+ * over-rate. Everything else competes on probability alone.
+ */
+const TRIVIAL_CALLS = new Set(['OVER_0_5', 'UNDER_5_5', ...EXCLUDED_SELECTIONS]);
+const REPORT_SIZE = 3;
 
 const WON_STATUSES = new Set(['WON', 'HALF_WON']);
 const LOST_STATUSES = new Set(['LOST', 'HALF_LOST']);
@@ -187,7 +184,7 @@ export async function getPlayedMatches(
   const predictions = await prisma.prediction.findMany({
     where: {
       supersededAt: null,
-      selection: { code: { in: ANALYSIS_CODES } },
+      selection: { code: { notIn: [...TRIVIAL_CALLS] } },
       match: { scheduledKickoffUtc: { gte: from, lt: to } },
     },
     select: {
@@ -210,16 +207,15 @@ export async function getPlayedMatches(
     },
   });
 
+  // Best call per market, then the three strongest markets.
   const callsByMatch = new Map<string, Map<string, AnalysisCall>>();
   for (const row of predictions) {
     const entry = entryFor(row.match);
-    const group = ANALYSIS_GROUP[row.selection.code];
-    if (!group) continue;
     const calls = callsByMatch.get(entry.id) ?? new Map<string, AnalysisCall>();
-    const current = calls.get(group);
+    const current = calls.get(row.market.code);
     const probability = Number(row.probability);
     if (!current || probability > current.probability) {
-      calls.set(group, {
+      calls.set(row.market.code, {
         marketCode: row.market.code,
         selectionCode: row.selection.code,
         probability,
@@ -231,9 +227,9 @@ export async function getPlayedMatches(
   for (const [matchId, calls] of callsByMatch) {
     const entry = byMatch.get(matchId);
     if (!entry) continue;
-    entry.analysis = ANALYSIS_ORDER.map((group) => calls.get(group)).filter(
-      (call): call is AnalysisCall => call !== undefined,
-    );
+    entry.analysis = [...calls.values()]
+      .sort((a, b) => b.probability - a.probability)
+      .slice(0, REPORT_SIZE);
   }
 
   const weeks = new Map<string, PlayedWeek>();
