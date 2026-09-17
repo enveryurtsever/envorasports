@@ -89,6 +89,7 @@ export default async function MatchesPage({ params }: { params: Promise<{ locale
               open={playedWeek.key === currentWeekKey}
               labels={{
                 pendingShort: t('pendingShort'),
+                analysis: t('analysisReport'),
                 summary: t('weekSummary', {
                   matches: playedWeek.matches.length,
                   won: playedWeek.won,
@@ -125,7 +126,7 @@ function WeekBlock({
 }: {
   week: PlayedWeek;
   open: boolean;
-  labels: { summary: string; pendingShort: string };
+  labels: { summary: string; pendingShort: string; analysis: string };
   format: Awaited<ReturnType<typeof getFormatter>>;
   translate: Awaited<ReturnType<typeof getTranslations>>;
   statusLabel: (key: string) => string;
@@ -203,6 +204,42 @@ function WeekBlock({
                   })}
                 </ul>
               </div>
+
+              {match.analysis.length > 0 ? (
+                <div className="w-full shrink-0 sm:w-56">
+                  <p className="text-[0.65rem] tracking-wide text-muted uppercase">{labels.analysis}</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {match.analysis.map((call) => {
+                      const mark = PICK_MARK[call.status];
+                      return (
+                        <li
+                          key={`${call.marketCode}:${call.selectionCode}`}
+                          className="flex items-center gap-1.5 text-[0.75rem]"
+                        >
+                          <span
+                            aria-label={mark ? resultLabel(call.status) : undefined}
+                            className={cn(
+                              'inline-flex h-3.5 w-3.5 items-center justify-center rounded text-[0.55rem] font-bold',
+                              mark?.className ?? 'bg-white/10 text-muted',
+                            )}
+                          >
+                            {mark?.glyph ?? '·'}
+                          </span>
+                          <span className="font-semibold">
+                            {formatSelection(translate, call.marketCode, call.selectionCode, {
+                              home: match.homeTeam,
+                              away: match.awayTeam,
+                            })}
+                          </span>
+                          <span className="tabular text-muted">
+                            {format.number(call.probability, 'percent')}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
 
               <span className="flex shrink-0 flex-col items-end gap-1">
                 {match.homeScore !== null && match.awayScore !== null ? (

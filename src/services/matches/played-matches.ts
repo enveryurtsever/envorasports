@@ -18,6 +18,15 @@ export interface PlayedPick {
   coupons: string[];
 }
 
+/** The model's own call on one market, priced or not, with how it went. */
+export interface AnalysisCall {
+  marketCode: string;
+  selectionCode: string;
+  probability: number;
+  /** PENDING until the match settles; then WON / LOST / PUSHED. */
+  status: string;
+}
+
 export interface PlayedMatch {
   id: string;
   kickoffUtc: Date;
@@ -28,6 +37,12 @@ export interface PlayedMatch {
   homeScore: number | null;
   awayScore: number | null;
   picks: PlayedPick[];
+  /**
+   * The analysis report: the model's most likely outcome on the result, the
+   * 2.5 line and the half-time result, by its own probability — not by
+   * price, edge or value. Three calls a reader can check against the score.
+   */
+  analysis: AnalysisCall[];
 }
 
 export interface PlayedWeek {
@@ -51,6 +66,20 @@ export interface PlayedSummary {
   hitRate: number | null;
   matchesPlayed: number;
 }
+
+/** Result, the 2.5 line, half-time result: one call each, most likely wins. */
+const ANALYSIS_GROUP: Record<string, 'result' | 'goals' | 'halfTime'> = {
+  MS_1: 'result',
+  MS_X: 'result',
+  MS_2: 'result',
+  OVER_2_5: 'goals',
+  UNDER_2_5: 'goals',
+  HT_1: 'halfTime',
+  HT_X: 'halfTime',
+  HT_2: 'halfTime',
+};
+const ANALYSIS_CODES = Object.keys(ANALYSIS_GROUP);
+const ANALYSIS_ORDER = ['result', 'goals', 'halfTime'] as const;
 
 const WON_STATUSES = new Set(['WON', 'HALF_WON']);
 const LOST_STATUSES = new Set(['LOST', 'HALF_LOST']);
@@ -97,9 +126,16 @@ export async function getPlayedMatches(
   const byMatch = new Map<string, PlayedMatch>();
   const pickIndex = new Map<string, PlayedPick>();
 
-  for (const selection of selections) {
-    const match = selection.match;
-
+  const entryFor = (match: {
+    id: string;
+    scheduledKickoffUtc: Date;
+    status: string;
+    homeScore: number | null;
+    awayScore: number | null;
+    homeTeam: { name: string };
+    awayTeam: { name: string };
+    league: { name: string };
+  }): PlayedMatch => {
     let entry = byMatch.get(match.id);
     if (!entry) {
       entry = {
@@ -112,9 +148,16 @@ export async function getPlayedMatches(
         homeScore: match.homeScore,
         awayScore: match.awayScore,
         picks: [],
+        analysis: [],
       };
       byMatch.set(match.id, entry);
     }
+    return entry;
+  };
+
+  for (const selection of selections) {
+    const match = selection.match;
+    const entry = entryFor(match);
 
     // The same pick on several coupons is one pick with several references —
     // otherwise a leg that happened to be popular counts three times.
@@ -134,6 +177,63 @@ export async function getPlayedMatches(
     };
     pickIndex.set(key, pick);
     entry.picks.push(pick);
+  }
+
+  /**
+   * Every match the model priced is listed, on a coupon or not: the report is
+   * the model's opinion, and a reader judging the model needs the ones it
+   * chose not to play as much as the ones it did.
+   */
+  const predictions = await prisma.prediction.findMany({
+    where: {
+      supersededAt: null,
+      selection: { code: { in: ANALYSIS_CODES } },
+      match: { scheduledKickoffUtc: { gte: from, lt: to } },
+    },
+    select: {
+      probability: true,
+      status: true,
+      market: { select: { code: true } },
+      selection: { select: { code: true } },
+      match: {
+        select: {
+          id: true,
+          scheduledKickoffUtc: true,
+          status: true,
+          homeScore: true,
+          awayScore: true,
+          homeTeam: { select: { name: true } },
+          awayTeam: { select: { name: true } },
+          league: { select: { name: true } },
+        },
+      },
+    },
+  });
+
+  const callsByMatch = new Map<string, Map<string, AnalysisCall>>();
+  for (const row of predictions) {
+    const entry = entryFor(row.match);
+    const group = ANALYSIS_GROUP[row.selection.code];
+    if (!group) continue;
+    const calls = callsByMatch.get(entry.id) ?? new Map<string, AnalysisCall>();
+    const current = calls.get(group);
+    const probability = Number(row.probability);
+    if (!current || probability > current.probability) {
+      calls.set(group, {
+        marketCode: row.market.code,
+        selectionCode: row.selection.code,
+        probability,
+        status: row.status,
+      });
+    }
+    callsByMatch.set(entry.id, calls);
+  }
+  for (const [matchId, calls] of callsByMatch) {
+    const entry = byMatch.get(matchId);
+    if (!entry) continue;
+    entry.analysis = ANALYSIS_ORDER.map((group) => calls.get(group)).filter(
+      (call): call is AnalysisCall => call !== undefined,
+    );
   }
 
   const weeks = new Map<string, PlayedWeek>();

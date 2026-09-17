@@ -228,7 +228,8 @@
     "metricHitRate": "İsabet",
     "pendingNote": "{count} tahmin henüz sonuçlanmadı; isabet oranı sadece sonuçlananlar üzerinden.",
     "pendingShort": "Bekliyor",
-    "weekSummary": "{matches} maç · {won} bildik · {lost} bilemedik"
+    "weekSummary": "{matches} maç · {won} bildik · {lost} bilemedik",
+    "analysisReport": "Analiz raporu"
   },
   "systems": {
     "title": "Sistem Kuponları",

@@ -228,7 +228,8 @@
     "metricHitRate": "Hit rate",
     "pendingNote": "{count} picks are not settled yet; the hit rate counts only settled ones.",
     "pendingShort": "Pending",
-    "weekSummary": "{matches} matches · {won} right · {lost} wrong"
+    "weekSummary": "{matches} matches · {won} right · {lost} wrong",
+    "analysisReport": "Analysis report"
   },
   "systems": {
     "title": "Combination Systems",
