@@ -92,6 +92,8 @@ const PLAN_WINDOW_SETTING = 'sync.planDateOffsets';
  * allows one extra fetch, which is nothing against the six an hour this stops.
  */
 const lastDateFetchAt = new Map<string, number>();
+/** The same, for the reconciliation pass, which has its own looser pace. */
+const lastReconcileFetchAt = new Map<string, number>();
 
 interface PlanWindow {
   /** Days back from today the plan will serve, as a negative number or zero. */
@@ -292,13 +294,28 @@ export async function reconcileDiscoveredFixtures(
 
   const isServable = await servableDates(now);
 
+  /**
+   * Once an hour per date, not once a run.
+   *
+   * This loop rides inside the result sync, six times an hour, and fetched a
+   * date on every pass while the main loop, throttled the day before, sat at
+   * zero: 74 fixture calls on the Wednesday, the same day's list over and
+   * over, and the budget gone by evening again. Binding an orphan to the
+   * provider's id is not urgent to the minute — it needs to happen before the
+   * per-fixture pricing and before settlement, both hours away — so an hour
+   * between asks costs nothing.
+   */
+  const RECONCILE_REFETCH_MS = 60 * 60_000;
+
   for (const dateKey of dates) {
     if (!isServable(dateKey)) continue;
+    if (now.getTime() - (lastReconcileFetchAt.get(dateKey) ?? 0) < RECONCILE_REFETCH_MS) continue;
 
     let fixtures: ProviderFixture[];
     try {
       fixtures = await provider.getFixturesByDate(new Date(`${dateKey}T00:00:00.000Z`));
       result.requestsSpent++;
+      lastReconcileFetchAt.set(dateKey, now.getTime());
     } catch (error) {
       await learnPlanWindow(error, now);
       log.warn('reconciliation date fetch failed', { date: dateKey, error: String(error) });

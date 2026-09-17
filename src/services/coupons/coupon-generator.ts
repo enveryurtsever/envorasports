@@ -5,6 +5,7 @@ import { Decimal, dec, toOdds } from '@/lib/math/decimal';
 import { combinedProbability } from '@/lib/math/probability';
 import {
   DEFAULT_SCORING_WEIGHTS,
+  EXCLUDED_SELECTIONS,
   SINGLE_MATCH_SURPRISE,
   type CouponCategory,
   type CouponCategorySettings,
@@ -252,6 +253,7 @@ export function filterForCategory(
   const selections = new Set(settings.allowedSelections ?? []);
 
   return candidates.filter((candidate) => {
+    if (EXCLUDED_SELECTIONS.includes(candidate.selectionCode)) return false;
     if (allowed.size > 0 && !allowed.has(candidate.marketCode)) return false;
     if (leagues.size > 0 && (!candidate.leagueCode || !leagues.has(candidate.leagueCode))) return false;
     if (selections.size > 0 && !selections.has(candidate.selectionCode)) return false;

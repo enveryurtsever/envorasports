@@ -25,6 +25,24 @@ import { MARKET } from '@/lib/markets/registry';
  */
 const NO_EDGE_REQUIREMENT = -1;
 
+/**
+ * Selections the model has shown it cannot price, kept off every coupon.
+ *
+ * Measured over the settled coupon legs, deduplicated to distinct fixtures:
+ * under selections came in 21 of 44 against a promised 63% (z −2.15), and the
+ * damage sits entirely on the high lines — Under 3.5 landed 47% against 64%
+ * promised, Under 4.5 landed 40% against 75% (z −2.65), and the losing under
+ * legs averaged 4.9 goals. Under 2.5 is calibrated (50% against 53%) and
+ * stays. The model does not believe in five-goal matches; when Barcelona or
+ * Real Madrid are involved, it is wrong about that often enough to cost the
+ * slate ten coupons in a night.
+ *
+ * A blacklist rather than a probability tweak, because the failure is
+ * specific and measured: the model's "not many goals" is its least reliable
+ * output, and only at the high lines.
+ */
+export const EXCLUDED_SELECTIONS: readonly string[] = ['UNDER_3_5', 'UNDER_4_5', 'UNDER_5_5'];
+
 export const COUPON_CATEGORIES = [
   'HIGH_CONFIDENCE',
   'BALANCED_PICKS',
