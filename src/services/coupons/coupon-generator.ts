@@ -155,7 +155,32 @@ const STRATEGIES = [
     name: 'confident_probability',
     rank: (c: Candidate) => Number(c.probability) * c.confidence,
   },
+  {
+    /**
+     * The best price among legs that already clear the bar.
+     *
+     * A Banko is legs at 0.80 or better paying 1.90 or more together, and
+     * the orderings above pick the surest legs first — 0.92 at 1.03 — which
+     * can never multiply to the floor. The pool is already the category's
+     * quality bar; ranking inside it by price is how a short-priced category
+     * reaches its odds floor on a thin day. For a category whose bar is low
+     * the same ordering would pick its weakest legs, so it is only tried
+     * where the bar is high.
+     */
+    name: 'best_price',
+    rank: (c: Candidate) => Number(c.odds),
+    minProbabilityBar: 0.75,
+  },
 ] as const;
+
+type Strategy = (typeof STRATEGIES)[number];
+
+/** The orderings a category may build with. */
+function strategiesFor(settings: CouponCategorySettings): readonly Strategy[] {
+  return STRATEGIES.filter(
+    (s) => !('minProbabilityBar' in s) || settings.minProbability >= s.minProbabilityBar,
+  );
+}
 
 export async function loadCandidates(
   window: CoverageWindow,
@@ -668,14 +693,15 @@ export function buildCategoryCoupons(
     // the same strategies run again from further down the ranking, which yields
     // a different combination out of the same candidates. Legs may repeat
     // across coupons; a whole coupon may not.
-    const maxAttempts = STRATEGIES.length * 5;
+    const strategies = strategiesFor(settings);
+    const maxAttempts = strategies.length * 5;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (coupons.length >= settings.couponCount * OVERBUILD) break;
       if (!perDay ? coupons.length >= perGroup : coupons.filter((c) => c.targetDate === groupKey).length >= perGroup) break;
 
-      const strategy = STRATEGIES[attempt % STRATEGIES.length]!;
-      const offset = Math.floor(attempt / STRATEGIES.length);
+      const strategy = strategies[attempt % strategies.length]!;
+      const offset = Math.floor(attempt / strategies.length);
 
       const coupon = buildCoupon(
         groupPool,
@@ -745,18 +771,19 @@ export function buildCategoryCoupons(
       if (coupons.length >= target) break;
       const groupPool = pool.filter((c) => inGroup(c, groupKey));
 
-      for (let attempt = 0; attempt < STRATEGIES.length * 5; attempt++) {
+      const strategies = strategiesFor(settings);
+      for (let attempt = 0; attempt < strategies.length * 5; attempt++) {
         if (coupons.length >= target) break;
 
         const coupon = buildCoupon(
           groupPool,
           settings,
           matrix,
-          STRATEGIES[attempt % STRATEGIES.length]!,
+          strategies[attempt % strategies.length]!,
           usedMatches,
           usedMarkets,
           weights,
-          Math.floor(attempt / STRATEGIES.length),
+          Math.floor(attempt / strategies.length),
           false,
           true,
         );

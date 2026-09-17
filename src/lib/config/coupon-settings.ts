@@ -478,24 +478,22 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     enabled: true,
     couponCount: 3,
     /**
-     * A Banko is a coupon that lands four times in five. That is the whole
-     * definition, and every number below follows from it.
+     * Two to three legs the model rates 80% or better, paying 1.90 or more.
      *
-     * The category did not land four in five. Eleven settled Banko coupons
-     * came in 4-7, and their own stated chances were 0.39-0.59: a 2.00 floor
-     * demanded two legs at about 1.41, which is a 71% shot each even when the
-     * model is right, and 50% together. The label promised what the settings
-     * could not deliver.
+     * The user's floor, set on 2026-09-17 after a day at 1.10: a coupon that
+     * lands four times in five prices at 1.25, and that is not worth playing.
+     * At 1.90 the arithmetic is fixed: three legs at about 1.25 each, and
+     * legs the model rates 0.80-0.90 come in 82-88% of the time (290 current
+     * predictions, 60 matches) — three together about 60%. That is the
+     * promise this category now makes, and it is written on the card.
+     * Nothing below 0.80 is admitted whatever the odds floor needs; when the
+     * day has no such legs the category is empty, not padded.
      *
-     * Measured on 290 current predictions over 60 matches, the model delivers
-     * 78% in the 0.75-0.80 band, 82-88% between 0.80 and 0.90, and 94% from
-     * 0.90 up (71 predictions, 43 matches). Two legs at 0.94 land 88%
-     * together; two at 0.80 land 64%. So the floor is 0.90 a leg and 0.80 for
-     * the coupon, and the odds are whatever that leaves — about 1.15 to 1.40.
-     * A four-in-five coupon cannot pay 2.00; the market prices 80% at 1.25.
+     * 2.10 here because the odds band tolerates a tenth below the floor —
+     * "at least 1.90" is the promise, and 2.10 is the setting that keeps it.
      */
-    minTotalOdds: 1.2,
-    maxTotalOdds: 2,
+    minTotalOdds: 2.1,
+    maxTotalOdds: 4,
     minSelections: 2,
     maxSelections: 3,
     minConfidence: 0.6,
@@ -505,11 +503,11 @@ export const DEFAULT_CATEGORY_SETTINGS: Record<CouponCategory, CouponCategorySet
     // never back a selection the market rates above our own model.
     minExpectedValue: NO_EDGE_REQUIREMENT,
     minEdge: NO_EDGE_REQUIREMENT,
-    minProbability: 0.9,
+    minProbability: 0.8,
     maxRisk: 0.4,
     maxCorrelation: 0.3,
     minDataQuality: 0.6,
-    minCombinedProbability: 0.8,
+    minCombinedProbability: 0.5,
     oneSelectionPerMatch: true,
     allowedMarkets: [
       MARKET.DOUBLE_CHANCE,
