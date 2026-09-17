@@ -167,9 +167,11 @@ export async function settleMatchPredictions(matchId: string): Promise<number> {
 export async function settlePendingPredictions(
   options: { limit?: number } = {},
 ): Promise<{ matches: number; predictions: number }> {
+  // Live matches are included: a running score settles the markets it has
+  // already decided (see inPlayOutcome), and the rest stay PENDING as before.
   const matches = await prisma.match.findMany({
     where: {
-      status: { in: ['FINISHED', 'AWARDED'] },
+      status: { in: ['FINISHED', 'AWARDED', 'LIVE', 'HALF_TIME', 'SUSPENDED'] },
       homeScore: { not: null },
       awayScore: { not: null },
       predictions: { some: { status: 'PENDING' } },
@@ -206,9 +208,23 @@ export async function settleCoupons(): Promise<{ coupons: number; selections: nu
     });
   }
 
-  // 2. Grade coupons that have no unresolved selection left.
+  /**
+   * 2. Grade every coupon whose outcome is already known.
+   *
+   * That is not the same as "every leg settled". A straight coupon with one
+   * lost leg has lost, whatever the other legs do — and waiting for them held
+   * seven coupons PENDING for four days over a Norwegian match no provider on
+   * the free plan would serve, while the user could read the loss off the
+   * card. A coupon is graded the moment its result cannot change.
+   */
   const candidates = await prisma.coupon.findMany({
-    where: { resultStatus: 'PENDING', selections: { none: { resultStatus: 'PENDING' } } },
+    where: {
+      resultStatus: 'PENDING',
+      OR: [
+        { selections: { none: { resultStatus: 'PENDING' } } },
+        { selections: { some: { resultStatus: 'LOST' } } },
+      ],
+    },
     select: {
       id: true,
       kind: true,
@@ -233,6 +249,8 @@ export async function settleCoupons(): Promise<{ coupons: number; selections: nu
 
     const statuses = coupon.selections.map((s) => s.resultStatus as SettlementOutcome);
     const lost = statuses.some((s) => s === 'LOST');
+    // Without a lost leg the coupon needs every leg in before it can be called.
+    if (!lost && statuses.some((s) => !isResolved(s))) continue;
     const allNeutral = statuses.every(isNeutral);
 
     let effectiveOdds = dec(1);
@@ -272,11 +290,14 @@ export async function settleCoupons(): Promise<{ coupons: number; selections: nu
 export async function settleSystemCoupons(): Promise<{ systems: number; columns: number }> {
   const settlementVersion = await getAppSetting<number>('settlement.version', 1);
 
+  /**
+   * Any pending system is a candidate. A column is lost as soon as one of its
+   * legs is, and once every column is decided the system is — even with a leg
+   * still open. A 3/4/5 over six legs with five losers has no column left that
+   * can pay, and the sixth leg is not worth waiting for.
+   */
   const systems = await prisma.systemCoupon.findMany({
-    where: {
-      resultStatus: 'PENDING',
-      coupon: { selections: { none: { resultStatus: 'PENDING' } } },
-    },
+    where: { resultStatus: 'PENDING' },
     select: {
       id: true,
       couponId: true,
@@ -306,6 +327,7 @@ export async function settleSystemCoupons(): Promise<{ systems: number; columns:
       );
 
       const lost = statuses.some((s) => s === 'LOST');
+      const open = !lost && statuses.some((s) => !isResolved(s));
       const allNeutral = statuses.length > 0 && statuses.every(isNeutral);
 
       // Effective odds for this column only — a void leg neutralises inside the
@@ -320,9 +342,12 @@ export async function settleSystemCoupons(): Promise<{ systems: number; columns:
         );
       }
 
-      const result: ColumnResult = lost ? 'LOST' : allNeutral ? 'VOID' : 'WON';
+      const result: ColumnResult = lost ? 'LOST' : open ? 'PENDING' : allNeutral ? 'VOID' : 'WON';
       return { column, result, effectiveOdds: toOdds(effectiveOdds) };
     });
+
+    // A column still open leaves the system open.
+    if (graded.some((g) => g.result === 'PENDING')) continue;
 
     const settlement = settleSystem(
       graded.map((g) => ({

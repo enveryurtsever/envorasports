@@ -44,6 +44,45 @@ describe('lifecycle gate', () => {
   });
 });
 
+describe('in-play settlement of decided markets', () => {
+  const live = result({ status: 'LIVE', homeScore: 4, awayScore: 2, halfTimeHomeScore: 4, halfTimeAwayScore: 1 });
+
+  it('settles goal lines the running score has already crossed', () => {
+    expect(settle(sel(MARKET.OVER_UNDER, 'OVER_3_5', { line: 3.5, side: 'OVER' }), live)).toBe('WON');
+    expect(settle(sel(MARKET.OVER_UNDER, 'UNDER_3_5', { line: 3.5, side: 'UNDER' }), live)).toBe('LOST');
+    expect(settle(sel(MARKET.OVER_UNDER, 'UNDER_4_5', { line: 4.5, side: 'UNDER' }), live)).toBe('LOST');
+    expect(settle(sel(MARKET.TOTAL_GOALS_THRESHOLD, 'GOALS_6_PLUS', { goals: 6 }), live)).toBe('WON');
+  });
+
+  it('leaves lines the score has not crossed open, including a whole line sitting on the total', () => {
+    expect(settle(sel(MARKET.OVER_UNDER, 'OVER_6_5', { line: 6.5, side: 'OVER' }), live)).toBe('PENDING');
+    expect(settle(sel(MARKET.OVER_UNDER, 'UNDER_6_5', { line: 6.5, side: 'UNDER' }), live)).toBe('PENDING');
+    expect(settle(sel(MARKET.OVER_UNDER, 'UNDER_6', { line: 6, side: 'UNDER' }), live)).toBe('PENDING');
+  });
+
+  it('settles both teams to score once both have', () => {
+    expect(settle(sel(MARKET.BTTS, 'BTTS_YES', { value: true }), live)).toBe('WON');
+    expect(settle(sel(MARKET.BTTS, 'BTTS_NO', { value: false }), live)).toBe('LOST');
+    expect(settle(sel(MARKET.BTTS, 'BTTS_NO', { value: false }), result({ status: 'LIVE', homeScore: 3, awayScore: 0 }))).toBe('PENDING');
+  });
+
+  it('settles half-time markets once the half-time score exists, and not before', () => {
+    expect(settle(sel(MARKET.HALF_TIME_OVER_UNDER, 'HT_OVER_1_5', { line: 1.5, side: 'OVER' }), live)).toBe('WON');
+    const firstHalf = result({ status: 'LIVE', homeScore: 1, awayScore: 0, halfTimeHomeScore: null, halfTimeAwayScore: null });
+    expect(settle(sel(MARKET.HALF_TIME_RESULT, 'HT_1', { outcome: 'HOME' }), firstHalf)).toBe('PENDING');
+  });
+
+  it('never settles a match-result market in play', () => {
+    expect(settle(sel(MARKET.MATCH_RESULT, 'MS_1', { outcome: 'HOME' }), live)).toBe('PENDING');
+    expect(settle(sel(MARKET.HALF_TIME_FULL_TIME, 'HT_FT_1_1', { half: '1', full: '1' }), live)).toBe('PENDING');
+    expect(settle(sel(MARKET.CORRECT_SCORE, 'CS_4_2', { home: 4, away: 2 }), live)).toBe('PENDING');
+  });
+
+  it('does not touch a scheduled match', () => {
+    expect(settle(sel(MARKET.OVER_UNDER, 'OVER_0_5', { line: 0.5, side: 'OVER' }), result({ status: 'SCHEDULED', homeScore: 0, awayScore: 0 }))).toBe('PENDING');
+  });
+});
+
 describe('match result and double chance', () => {
   it('settles 1X2 from the full-time score', () => {
     expect(settle(sel(MARKET.MATCH_RESULT, 'MS_1', { outcome: 'HOME' }))).toBe('WON');

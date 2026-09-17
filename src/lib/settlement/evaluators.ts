@@ -318,7 +318,11 @@ export function settleSelection(
   result: MatchResultInput,
 ): SettlementOutcome {
   const lifecycle = lifecycleOutcome(result);
-  if (lifecycle !== null) return lifecycle;
+  if (lifecycle !== null) {
+    return lifecycle === 'PENDING' && IN_PLAY.has(result.status)
+      ? inPlayOutcome(selection, result)
+      : lifecycle;
+  }
 
   const evaluator = getEvaluator(selection.marketCode);
   if (!evaluator) {
@@ -335,6 +339,77 @@ export function settleSelection(
       : selection.parameters;
 
   return evaluator.evaluate({ ...selection, parameters }, result);
+}
+
+const IN_PLAY = new Set<MatchResultInput['status']>(['LIVE', 'HALF_TIME', 'SUSPENDED']);
+
+/**
+ * What a running score has already decided.
+ *
+ * Goals are never taken back, so some markets are settled before the whistle:
+ * Under 3.5 with six goals on the board has lost, whatever the final score,
+ * and Over 3.5 has won. Barcelona 4-2 Santander sat "LIVE" for six hours
+ * after full time because the provider's clock stopped at 65', and three
+ * unders that had been dead since the fourth goal held two coupons open. The
+ * bookmaker's own rule is the same — a market unconditionally determined
+ * stands even if the match is later abandoned — so nothing here can be
+ * contradicted by the final result.
+ *
+ * Only monotone facts are used: total goals, each side's goals, and the
+ * half-time score, which the provider reports only once the half is over.
+ * Whole-number lines sitting exactly on the total are still open (a push or a
+ * winner), and every match-result market waits for the end.
+ */
+export function inPlayOutcome(selection: SelectionContext, result: MatchResultInput): SettlementOutcome {
+  const { homeScore, awayScore } = result;
+  if (homeScore === null || awayScore === null) return 'PENDING';
+  const goals = homeScore + awayScore;
+  const p = selection.parameters;
+
+  switch (selection.marketCode) {
+    case MARKET.OVER_UNDER: {
+      const line = readNumber(p, 'line');
+      const side = readString(p, 'side');
+      const subject = readString(p, 'subject') ?? 'total';
+      if (line === null || subject !== 'total') return 'PENDING';
+      if (goals > line) return won(side === 'OVER');
+      return 'PENDING';
+    }
+    case MARKET.TOTAL_GOALS_THRESHOLD: {
+      const threshold = readNumber(p, 'goals');
+      return threshold !== null && goals >= threshold ? 'WON' : 'PENDING';
+    }
+    case MARKET.GOAL_RANGE: {
+      const min = readNumber(p, 'min');
+      const max = readNumber(p, 'max');
+      if (max !== null && goals > max) return 'LOST';
+      if (min !== null && max === null && goals >= min) return 'WON';
+      return 'PENDING';
+    }
+    case MARKET.BTTS: {
+      if (homeScore > 0 && awayScore > 0) return won(p?.value === true);
+      return 'PENDING';
+    }
+    case MARKET.TEAM_TOTAL: {
+      const side = readString(p, 'side');
+      const direction = readString(p, 'direction');
+      const line = readNumber(p, 'line');
+      if ((side !== 'HOME' && side !== 'AWAY') || line === null) return 'PENDING';
+      const scored = side === 'HOME' ? homeScore : awayScore;
+      if (scored > line) return won(direction === 'OVER');
+      return 'PENDING';
+    }
+    // The half-time score is final the moment it exists.
+    case MARKET.HALF_TIME_RESULT:
+    case MARKET.HALF_TIME_CORRECT_SCORE:
+    case MARKET.HALF_TIME_OVER_UNDER:
+    case MARKET.BTTS_FIRST_HALF: {
+      if (result.halfTimeHomeScore === null || result.halfTimeAwayScore === null) return 'PENDING';
+      return getEvaluator(selection.marketCode)?.evaluate(selection, result) ?? 'PENDING';
+    }
+    default:
+      return 'PENDING';
+  }
 }
 
 /** Market codes that currently have a settlement implementation. */

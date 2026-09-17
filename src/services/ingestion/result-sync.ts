@@ -647,7 +647,15 @@ export async function syncMatchResults(now: Date = new Date()): Promise<ResultSy
     .sort()
     .reverse();
 
-  if (provider.getFixturesByDate && dateKeys.length > 0 && dateKeys.length < due.length) {
+  /**
+   * Any date worth fetching is fetched. The old guard, "only when there are
+   * fewer dates than matches", was written when the per-fixture path still
+   * ran below and a date fetch had to earn its place over it. With that path
+   * closed on this provider, the guard left a lone due match — the evening's
+   * last kick-off, Barcelona at 4-2 six hours after the final whistle — with
+   * one date for one match, no fetch, and an "unreachable" mark instead.
+   */
+  if (provider.getFixturesByDate && dateKeys.length > 0) {
     const isServable = await servableDates(now);
 
     for (const dateKey of dateKeys) {
