@@ -71,6 +71,17 @@ export interface MatchAnalysis {
     homeScore: number;
     awayScore: number;
   }>;
+  /** The sourced news reading applied to the model, when one exists. */
+  insight: {
+    asOf: Date;
+    confidence: number;
+    summary: { tr: string; en: string };
+    tempo: string;
+    home: { absentees: Array<{ name: string; reason: string; importance: string }>; returning: string[]; notes: string[] };
+    away: { absentees: Array<{ name: string; reason: string; importance: string }>; returning: string[]; notes: string[] };
+    adjustments: { homeGoals: number; awayGoals: number; lean: number };
+    sources: Array<{ title: string; uri: string }>;
+  } | null;
 }
 
 /** Markets worth showing on the analysis page, in display order. */
@@ -191,7 +202,7 @@ export async function getMatchAnalysis(
   } | null;
 
   const asOf = latestTimestamp ?? new Date();
-  const [homeForm, awayForm, elo, h2h] = await Promise.all([
+  const [homeForm, awayForm, elo, h2h, insightRow] = await Promise.all([
     getTeamForm(match.homeTeamId, asOf),
     getTeamForm(match.awayTeamId, asOf),
     getEloForTeams([match.homeTeamId, match.awayTeamId], asOf),
@@ -213,6 +224,10 @@ export async function getMatchAnalysis(
         homeTeam: { select: { name: true } },
         awayTeam: { select: { name: true } },
       },
+    }),
+    prisma.matchInsight.findUnique({
+      where: { matchId: match.id },
+      select: { asOf: true, confidence: true, payload: true, sources: true, homeGoalAdjustment: true, awayGoalAdjustment: true, resultLean: true },
     }),
   ]);
 
@@ -295,5 +310,40 @@ export async function getMatchAnalysis(
       homeScore: m.homeScore as number,
       awayScore: m.awayScore as number,
     })),
+    insight: insightRow ? readInsight(insightRow) : null,
+  };
+}
+
+function readInsight(row: {
+  asOf: Date;
+  confidence: unknown;
+  payload: unknown;
+  sources: unknown;
+  homeGoalAdjustment: unknown;
+  awayGoalAdjustment: unknown;
+  resultLean: unknown;
+}): MatchAnalysis['insight'] {
+  const payload = row.payload as {
+    summaryTr?: string;
+    summaryEn?: string;
+    tempo?: string;
+    home?: MatchAnalysis['insight'] extends infer T ? (T extends { home: infer H } ? H : never) : never;
+    away?: MatchAnalysis['insight'] extends infer T ? (T extends { away: infer A } ? A : never) : never;
+  } | null;
+  if (!payload) return null;
+  const empty = { absentees: [], returning: [], notes: [] };
+  return {
+    asOf: row.asOf,
+    confidence: Number(row.confidence),
+    summary: { tr: payload.summaryTr ?? '', en: payload.summaryEn ?? '' },
+    tempo: payload.tempo ?? 'normal',
+    home: payload.home ?? empty,
+    away: payload.away ?? empty,
+    adjustments: {
+      homeGoals: Number(row.homeGoalAdjustment),
+      awayGoals: Number(row.awayGoalAdjustment),
+      lean: Number(row.resultLean),
+    },
+    sources: Array.isArray(row.sources) ? (row.sources as Array<{ title: string; uri: string }>) : [],
   };
 }

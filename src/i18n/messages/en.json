@@ -528,7 +528,18 @@
     "dataLimitations": "Data limitations",
     "generated": "AI written",
     "template": "Standard text",
-    "grounding": "Written from stored model output only. No figure appears here that the engine did not compute."
+    "grounding": "Written from stored model output only. No figure appears here that the engine did not compute.",
+    "newsTitle": "Match news",
+    "newsDescription": "Current news read with a sourced search: absentees, returns, motivation. The model weighs it within bounds.",
+    "absentees": "Absentees",
+    "returning": "Returning",
+    "notes": "Notes",
+    "sources": "Sources",
+    "confidence": "Source confidence",
+    "readAt": "Read at",
+    "goalEffect": "Effect on expected goals",
+    "leanEffect": "Lean on the result",
+    "nothingReported": "No absentees reported"
   },
   "winners": {
     "title": "Winners",

@@ -8,6 +8,7 @@ import { SelectionLabel } from '@/components/predictions/selection-label';
 import { METRIC_TOKENS, signedTone } from '@/lib/format/metric-tokens';
 import { FactorBars } from '@/components/predictions/factor-bars';
 import { AiAnalysis } from '@/components/predictions/ai-analysis';
+import { MatchNews } from '@/components/predictions/match-news';
 
 export const dynamic = 'force-dynamic';
 
@@ -144,6 +145,18 @@ export default async function MatchDetailPage({
               </PremiumCard>
             </section>
           ))}
+
+          {analysis.insight ? (
+            <section>
+              <SectionHeading title={tAnalysis('newsTitle')} description={tAnalysis('newsDescription')} />
+              <MatchNews
+                insight={analysis.insight}
+                locale={locale === 'tr' ? 'tr' : 'en'}
+                homeTeam={match.homeTeam}
+                awayTeam={match.awayTeam}
+              />
+            </section>
+          ) : null}
 
           <section>
             <SectionHeading title={tp('why')} description={tp('whyDescription')} />

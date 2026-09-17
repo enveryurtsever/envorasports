@@ -528,7 +528,18 @@
     "dataLimitations": "Veri sınırlamaları",
     "generated": "Yapay zekâ yazdı",
     "template": "Standart metin",
-    "grounding": "Yalnızca kayıtlı model çıktısından yazılır. Motorun hesaplamadığı hiçbir sayı burada yer almaz."
+    "grounding": "Yalnızca kayıtlı model çıktısından yazılır. Motorun hesaplamadığı hiçbir sayı burada yer almaz.",
+    "newsTitle": "Maç haberleri",
+    "newsDescription": "Kaynaklı arama ile okunan güncel haberler: eksikler, dönenler, motivasyon. Model bunu sınırlı ölçüde hesaba katar.",
+    "absentees": "Eksikler",
+    "returning": "Dönenler",
+    "notes": "Notlar",
+    "sources": "Kaynaklar",
+    "confidence": "Kaynak güveni",
+    "readAt": "Okunma",
+    "goalEffect": "Gol beklentisine etki",
+    "leanEffect": "Sonuca eğilim",
+    "nothingReported": "Bildirilen eksik yok"
   },
   "winners": {
     "title": "Kazananlar",
