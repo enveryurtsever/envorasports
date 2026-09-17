@@ -335,6 +335,8 @@ export interface MatchPrediction {
   perModel: Record<string, Record<string, number>>;
   homeForm: TeamFormBundle;
   awayForm: TeamFormBundle;
+  /** The news reading applied, kept on the row so its effect can be measured. */
+  insight: { homeGoalAdjustment: number; awayGoalAdjustment: number; resultLean: number; confidence: number; asOf: string } | null;
   eloKnown: boolean;
   hasXg: boolean;
   /** The cross-league adjustment, so a surprising number is traceable. */
@@ -412,6 +414,36 @@ export function readModelConfiguration(configuration: unknown): ModelConfigurati
  * the backtest does not. Sharing this function is what guarantees a backtest
  * measures the same model the product actually ships (§37).
  */
+const INSIGHT_LEAN_POINTS = 60;
+
+/** The news reading for a fixture, already bounded, or nothing. */
+export async function getInsight(matchId: string): Promise<{
+  homeGoalAdjustment: number;
+  awayGoalAdjustment: number;
+  resultLean: number;
+  confidence: number;
+  asOf: Date;
+} | null> {
+  const row = await prisma.matchInsight.findUnique({
+    where: { matchId },
+    select: {
+      homeGoalAdjustment: true,
+      awayGoalAdjustment: true,
+      resultLean: true,
+      confidence: true,
+      asOf: true,
+    },
+  });
+  if (!row) return null;
+  return {
+    homeGoalAdjustment: Number(row.homeGoalAdjustment),
+    awayGoalAdjustment: Number(row.awayGoalAdjustment),
+    resultLean: Number(row.resultLean),
+    confidence: Number(row.confidence),
+    asOf: row.asOf,
+  };
+}
+
 /** Last meetings between the two sides, either venue, before the cut-off. */
 const HEAD_TO_HEAD_MEETINGS = 5;
 const HEAD_TO_HEAD_YEARS = 4;
@@ -460,11 +492,12 @@ export async function computeMatchPrediction(
   config: ModelConfiguration,
   leagueAverages: { homeGoals: number; awayGoals: number; sampleSize: number },
 ): Promise<MatchPrediction | null> {
-  const [homeForm, awayForm, elo, headToHead] = await Promise.all([
+  const [homeForm, awayForm, elo, headToHead, insight] = await Promise.all([
     getTeamForm(match.homeTeamId, asOf),
     getTeamForm(match.awayTeamId, asOf),
     getEloForTeams([match.homeTeamId, match.awayTeamId], asOf, config.elo),
     getHeadToHead(match.homeTeamId, match.awayTeamId, asOf),
+    getInsight(match.matchId),
   ]);
 
   if (!homeForm.hasUsableSample && !awayForm.hasUsableSample) return null;
@@ -532,15 +565,23 @@ export async function computeMatchPrediction(
     shrinkage: config.poisson.shrinkage,
     maxGoals: config.poisson.maxGoals,
     headToHead,
+    insight,
   };
   // Every model spreads its result over the same expected goals: the sides'
   // own, not the league's.
   const expected = poissonLambdas(poissonInput);
 
+  /**
+   * The news as a rating shift. A full lean is sixty points — about eight
+   * points of win expectation between level sides — and a vague briefing is
+   * scaled to nothing before it gets here.
+   */
+  const leanPoints = (insight?.resultLean ?? 0) * INSIGHT_LEAN_POINTS;
+
   const models: ModelOutput[] = [
     runEloModel({
-      homeRating: homeElo.rating + homeStrength,
-      awayRating: awayElo.rating + awayStrength,
+      homeRating: homeElo.rating + homeStrength + leanPoints,
+      awayRating: awayElo.rating + awayStrength - leanPoints,
       homeMatchesPlayed: homeElo.matchesPlayed,
       awayMatchesPlayed: awayElo.matchesPlayed,
       homeAdvantage: config.elo.homeAdvantage,
@@ -571,6 +612,15 @@ export async function computeMatchPrediction(
     perModel: ensemble.perModel,
     homeForm,
     awayForm,
+    insight: insight
+      ? {
+          homeGoalAdjustment: Number(insight.homeGoalAdjustment.toFixed(3)),
+          awayGoalAdjustment: Number(insight.awayGoalAdjustment.toFixed(3)),
+          resultLean: Number(insight.resultLean.toFixed(3)),
+          confidence: Number(insight.confidence.toFixed(3)),
+          asOf: insight.asOf.toISOString(),
+        }
+      : null,
     eloKnown: homeElo.known && awayElo.known,
     hasXg: models.some((m) => m.name === 'xg' && m.available),
     leagueStrength: {
@@ -917,6 +967,7 @@ export async function runPredictions(
           perModelResult: ensemble.perModel,
           modelConfigVersion: config.configVersion,
           leagueStrength: prediction.leagueStrength,
+          insight: prediction.insight,
           calibration: {
             marketPriorWeight: config.marketPriorWeight,
             groupsCalibrated: calibrated.calibratedGroups.length,

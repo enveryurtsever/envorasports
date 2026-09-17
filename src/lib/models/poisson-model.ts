@@ -32,6 +32,15 @@ export interface PoissonModelInput {
    * only in proportion to how many meetings there are.
    */
   headToHead?: { averageTotalGoals: number; sampleSize: number } | null;
+  /**
+   * What the news changes, as a signed fraction of each side's goals.
+   *
+   * A suspended striker, a rested first eleven, a side playing for nothing:
+   * none of it is in the scorelines the ratios come from. Bounded upstream to
+   * a quarter either way, and already scaled by how well-sourced the reading
+   * was, so an empty briefing multiplies by one.
+   */
+  insight?: { homeGoalAdjustment: number; awayGoalAdjustment: number } | null;
 }
 
 /** Most the head-to-head may move the expected total, at a full sample. */
@@ -61,7 +70,12 @@ export function poissonLambdas(input: PoissonModelInput): { lambdaHome: number; 
   const rawHome = Math.max(0.05, homeAttack * awayDefence * input.leagueHomeGoals);
   const rawAway = Math.max(0.05, awayAttack * homeDefence * input.leagueAwayGoals);
   const factor = headToHeadFactor(rawHome + rawAway, input.headToHead);
-  return { lambdaHome: rawHome * factor, lambdaAway: rawAway * factor };
+  const newsHome = 1 + (input.insight?.homeGoalAdjustment ?? 0);
+  const newsAway = 1 + (input.insight?.awayGoalAdjustment ?? 0);
+  return {
+    lambdaHome: Math.max(0.05, rawHome * factor * newsHome),
+    lambdaAway: Math.max(0.05, rawAway * factor * newsAway),
+  };
 }
 
 /** Pulls a strength ratio toward 1 in proportion to how little we have seen. */
@@ -100,6 +114,8 @@ export function runPoissonModel(input: PoissonModelInput): ModelOutput {
       leagueAwayGoals: Number(input.leagueAwayGoals.toFixed(3)),
       headToHeadGoals: input.headToHead ? Number(input.headToHead.averageTotalGoals.toFixed(2)) : null,
       headToHeadSample: input.headToHead?.sampleSize ?? 0,
+      insightHomeGoals: input.insight ? Number(input.insight.homeGoalAdjustment.toFixed(3)) : null,
+      insightAwayGoals: input.insight ? Number(input.insight.awayGoalAdjustment.toFixed(3)) : null,
       sampleSize: sample,
     },
   };

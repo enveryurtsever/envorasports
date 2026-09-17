@@ -406,6 +406,7 @@ model Match {
   discoveredFrom   DiscoveredFixture[]
   externalMapping  ExternalMatchMapping?
   poolEntries      SelectionPool[]
+  insight          MatchInsight?
 
   @@unique([source, externalId])
   @@index([scheduledKickoffUtc, status])
@@ -1854,4 +1855,38 @@ model SelectionPool {
   @@index([generationRunId, eligible])
   @@index([builtAt])
   @@map("selection_pool")
+}
+
+/// What the news says about a fixture that the archive cannot: absentees,
+/// motivation, rotation, tempo. Researched with a grounded search, structured
+/// by a second call, and applied to the model as bounded adjustments.
+model MatchInsight {
+  id      String @id @default(cuid())
+  matchId String @unique @map("match_id")
+  model   String
+  asOf    DateTime @map("as_of")
+
+  /// The grounded research text, kept so the structuring can be audited.
+  research String
+  /// The structured reading (absentees, context, tempo, lean, summary).
+  payload  Json
+  /// Web sources the research cited.
+  sources  Json
+  searchQueries Json? @map("search_queries")
+
+  /// Multipliers on each side's expected goals, as a signed fraction: 0.1 = +10%.
+  homeGoalAdjustment Decimal @map("home_goal_adjustment") @db.Decimal(5, 3)
+  awayGoalAdjustment Decimal @map("away_goal_adjustment") @db.Decimal(5, 3)
+  /// -1..1, positive toward the home side.
+  resultLean Decimal @map("result_lean") @db.Decimal(5, 3)
+  /// 0..1 — how much the reading is trusted; scales every adjustment.
+  confidence Decimal @db.Decimal(4, 3)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@index([asOf])
+  @@map("match_insights")
 }

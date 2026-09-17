@@ -15,6 +15,7 @@ import {
   runMatchOddsSync,
   runHayal,
   runNarration,
+  runInsight,
   runResultSync,
   runSettlementSweep,
 } from '../src/services/jobs/registry';
@@ -175,6 +176,15 @@ const JOBS: ScheduledJob[] = [
     name: 'narrate-analyses',
     everyMs: 60 * MINUTE,
     run: () => runNarration(),
+  },
+  {
+    /**
+     * Before the narration, so the analyses describe the news-adjusted view.
+     * Hourly is the cadence of team news; the pass reads only what is due.
+     */
+    name: 'insight',
+    everyMs: 60 * MINUTE,
+    run: () => runInsight(),
   },
   {
     name: 'rebuild-features',

@@ -43,6 +43,15 @@ const serverSchema = z.object({
   GEMINI_FALLBACK_MODELS: z
     .string()
     .default('gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-lite-latest'),
+  /**
+   * The model that researches a fixture's news with the search tool. Grounded
+   * search is metered separately from generation (5,000 a month free on the
+   * paid tier, then $14 a thousand), so the cheapest model that searches well
+   * is the right one; the reading is structured, not written.
+   */
+  INSIGHT_MODEL: z.string().default('gemini-3.5-flash-lite'),
+  /** 'none' switches the layer off: predictions run on the archive alone. */
+  INSIGHT_PROVIDER: z.enum(['gemini', 'none']).default('none'),
 
   BILLING_PROVIDER: z.enum(['stripe', 'none']).default('none'),
   STRIPE_SECRET_KEY: z.string().default(''),

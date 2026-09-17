@@ -28,6 +28,7 @@ import { rebuildEloRatings } from '../features/elo';
 import { runPredictions } from '../predictions/prediction-engine';
 import { generateCoupons } from '../coupons/coupon-generator';
 import { narrateWindow } from '../narration/narration-job';
+import { runInsightPass } from '../insight/insight-job';
 import { detectHayalSignals } from '../hayal/signal';
 import { syncHayalOdds } from '../hayal/odds-sync';
 import { generateHayalCoupons } from '../hayal/coupon-builder';
@@ -57,6 +58,7 @@ export type JobName =
   | 'match-odds'
   | 'rebuild-features'
   | 'narrate-analyses'
+  | 'insight'
   | 'result-sync'
   | 'settlement'
   | 'historical-import'
@@ -366,6 +368,29 @@ export async function runNarration(): Promise<JobOutcome> {
 }
 
 /**
+ * Reads the news for the fixtures ahead and re-prices them. Keyed on the hour:
+ * a fixture is read once inside the horizon and again close to kick-off, and
+ * the pass itself decides what is due.
+ */
+export async function runInsight(): Promise<JobOutcome> {
+  return runJob({
+    jobName: 'insight',
+    runKey: runKeyFor('insight', `${new Date().toISOString().slice(0, 13)}`),
+    lockKey: 'insight',
+    lockTtlMs: 30 * 60 * 1000,
+    handler: async ({ heartbeat }) => {
+      const result = await runInsightPass();
+      await heartbeat();
+      return {
+        itemsProcessed: result.researched,
+        itemsFailed: result.failed + result.discarded,
+        metadata: { ...result },
+      };
+    },
+  });
+}
+
+/**
  * Kickoff-aware result polling, then settlement for anything that just became
  * final. Safe to call on a short interval: it self-throttles per match.
  */
@@ -662,6 +687,8 @@ export async function runNamedJob(name: JobName, request: JobRequest = {}): Prom
       return runFeatureRebuild();
     case 'narrate-analyses':
       return runNarration();
+    case 'insight':
+      return runInsight();
     case 'result-sync':
       return runResultSync();
     case 'settlement':
