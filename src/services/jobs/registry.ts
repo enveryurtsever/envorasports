@@ -71,6 +71,15 @@ export interface JobRequest {
    * that is the most recent one, not today.
    */
   force?: boolean;
+  /**
+   * Re-price and re-generate the current window from what is already stored,
+   * without a provider request: no fixture or bulletin sync. Keyed by the
+   * hour, so it can run as often as fixtures and prices arrive. This is how
+   * Saturday's matches, priced on Friday, get their predictions and coupons
+   * before Saturday — the publication itself ran on Thursday, when the free
+   * plan could not yet serve them.
+   */
+  refresh?: boolean;
   /** Backfill a specific publication day, e.g. "2026-09-03". */
   publicationDate?: string;
   /** historical-import only. */
@@ -108,24 +117,33 @@ export async function runBulletinPublication(request: JobRequest = {}): Promise<
 
   const window = decision.window;
 
+  const refresh = request.refresh === true;
+
   return runJob({
     jobName: 'bulletin-publication',
     // One successful publication per day: re-triggering the cron is a no-op.
-    runKey: runKeyFor('bulletin-publication', decision.publicationDate),
+    // A refresh is keyed by the hour instead, and spends nothing.
+    runKey: refresh
+      ? runKeyFor('bulletin-publication', `${decision.publicationDate}:refresh:${new Date().toISOString().slice(0, 13)}`)
+      : runKeyFor('bulletin-publication', decision.publicationDate),
     lockKey: 'ingestion',
     lockTtlMs: 20 * 60 * 1000,
     handler: async ({ logger, heartbeat }) => {
-      logger.info('publication window', {
+      logger.info(refresh ? 'publication refresh' : 'publication window', {
         publicationDate: decision.publicationDate,
         days: window.days,
       });
 
-      const fixtures = await syncFixturesForWindow(window);
+      const fixtures = refresh
+        ? { daysRequested: 0, daysFetched: 0, daysDeferred: [] as string[], fixturesSeen: 0, matchesUpserted: 0, skippedUnmappedLeague: 0, unresolvedTeams: 0 }
+        : await syncFixturesForWindow(window);
       await heartbeat();
 
       // The bulletin runs second on purpose: it only spends credits on
       // competitions that actually have fixtures in the window.
-      const bulletin = await syncBulletinForWindow(window);
+      const bulletin = refresh
+        ? { eventsSeen: 0, pricesStored: 0, eventsMatched: 0, eventsUnmatched: 0, quotaRemaining: null as number | null, competitionsRequested: 0 }
+        : await syncBulletinForWindow(window);
       await heartbeat();
 
       // Features -> models -> value -> coupons. Each step reads only what the

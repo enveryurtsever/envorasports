@@ -87,15 +87,36 @@ async function publicationIsDue(): Promise<boolean> {
  * a no-op when there is nothing to do.
  */
 async function uncoveredFixturesExist(): Promise<boolean> {
-  const upcoming = await prisma.match.findMany({
-    where: { status: 'SCHEDULED', scheduledKickoffUtc: { gt: new Date() } },
-    select: { scheduledKickoffUtc: true },
-    take: 200,
+  const now = new Date();
+
+  /**
+   * A priced fixture the model has not spoken on is new work, whatever else
+   * is on the slate. The old test — "is any upcoming match on a coupon?" —
+   * was satisfied by one Thursday coupon while a hundred Saturday fixtures
+   * arrived and were priced, and the site went into the weekend with
+   * nothing: the publication had run on Thursday, before the free plan could
+   * serve those days, and nothing asked it to look again.
+   */
+  const unpredicted = await prisma.match.findFirst({
+    where: {
+      status: 'SCHEDULED',
+      excludedFromGeneration: false,
+      scheduledKickoffUtc: { gt: now },
+      odds: { some: {} },
+      predictions: { none: { supersededAt: null } },
+    },
+    select: { id: true },
   });
-  if (upcoming.length === 0) return false;
+  if (unpredicted) return true;
+
+  const upcoming = await prisma.match.findFirst({
+    where: { status: 'SCHEDULED', scheduledKickoffUtc: { gt: now } },
+    select: { id: true },
+  });
+  if (!upcoming) return false;
 
   const covered = await prisma.couponSelection.findFirst({
-    where: { match: { status: 'SCHEDULED', scheduledKickoffUtc: { gt: new Date() } } },
+    where: { match: { status: 'SCHEDULED', scheduledKickoffUtc: { gt: now } } },
     select: { id: true },
   });
 
@@ -135,7 +156,7 @@ const JOBS: ScheduledJob[] = [
     run: async () =>
       (await scheduledPublicationDue())
         ? runBulletinPublication()
-        : runBulletinPublication({ force: true }),
+        : runBulletinPublication({ force: true, refresh: true }),
   },
   {
     // Fills window days the provider's plan could not serve earlier.
