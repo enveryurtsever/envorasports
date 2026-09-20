@@ -45,6 +45,8 @@ interface ScheduledJob {
 }
 
 const lastRun = new Map<string, number>();
+/** How soon a job blocked by another's lock is tried again. */
+const LOCK_RETRY_MS = 2 * 60 * 1000;
 
 function stamp(): string {
   return new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -263,6 +265,16 @@ async function tick(): Promise<void> {
       // done. Only surface it when it carries a reason worth reading.
       if (outcome.status === 'SKIPPED') {
         log(`${job.name}: skipped`, outcome.reason);
+        /**
+         * A lock collision is not a run. The odds job and the fixture top-up
+         * share the ingestion lock and, counted from process start, fell on
+         * the same minute; the odds job then waited its full four hours,
+         * through the budget reset, and Sunday went unpriced. It tries again
+         * two minutes later, after whichever job held the lock has let go.
+         */
+        if (outcome.reason === 'lock_unavailable') {
+          lastRun.set(job.name, now - job.everyMs + LOCK_RETRY_MS);
+        }
       } else {
         log(`${job.name}: ${outcome.status}`, { processed: outcome.itemsProcessed ?? 0 });
       }
