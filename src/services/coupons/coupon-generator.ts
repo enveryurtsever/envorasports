@@ -835,9 +835,28 @@ export function buildCategoryCoupons(
     coupon.selections.forEach((s) => spokenFor.add(s.fixtureKey));
   }
 
+  /**
+   * The fill may repeat a fixture, never a slip.
+   *
+   * Two Bankos on 18 September carried the same three Over 1.5 legs, and two
+   * on the 20th the same again — the fill accepted any coupon not already
+   * in the list, and two builds from different offsets had landed on the
+   * same legs. A coupon that shares two thirds of its selections with one
+   * already chosen is the same tip to the reader, and fewer coupons beats
+   * that.
+   */
+  const legsOf = (coupon: BuiltCoupon) => new Set(coupon.selections.map((s) => s.predictionId));
+  const nearCopy = (coupon: BuiltCoupon) =>
+    chosen.some((other) => {
+      const mine = legsOf(coupon);
+      const shared = [...legsOf(other)].filter((id) => mine.has(id)).length;
+      return shared / Math.min(mine.size, other.selections.length) >= 2 / 3;
+    });
+
   for (const coupon of coupons) {
     if (chosen.length >= settings.couponCount) break;
-    if (!chosen.includes(coupon)) chosen.push(coupon);
+    if (chosen.includes(coupon) || nearCopy(coupon)) continue;
+    chosen.push(coupon);
   }
 
   const shortfallReason =

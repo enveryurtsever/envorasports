@@ -13,7 +13,7 @@ import { runFormModel } from '@/lib/models/form-model';
 import { runXgModel } from '@/lib/models/xg-model';
 import { runEnsemble } from '@/lib/models/ensemble';
 import { blendWithMarket } from '@/lib/models/calibration';
-import type { ModelOutput } from '@/lib/models/types';
+import type { ModelOutput, SelectionProbabilities } from '@/lib/models/types';
 
 const log = createLogger('predictions');
 
@@ -335,6 +335,11 @@ export interface MatchPrediction {
   perModel: Record<string, Record<string, number>>;
   homeForm: TeamFormBundle;
   awayForm: TeamFormBundle;
+  /**
+   * What the news changed in the ensemble, per selection: with the reading
+   * minus without it. Added to the market-blended probability downstream.
+   */
+  insightDelta: SelectionProbabilities | null;
   /** The news reading applied, kept on the row so its effect can be measured. */
   insight: { homeGoalAdjustment: number; awayGoalAdjustment: number; resultLean: number; confidence: number; asOf: string } | null;
   eloKnown: boolean;
@@ -377,9 +382,21 @@ export interface ModelConfiguration {
  * the place to tune the model: a live change belongs in the ModelVersion
  * configuration, where it is versioned and shows up in the audit trail.
  */
+/**
+ * The market carries four fifths of the final probability.
+ *
+ * Measured 2026-09-21 over 2,350 settled predictions on 112 matches: the
+ * vig-free market scored Brier 0.1848, the raw model 0.1923, and every
+ * blend toward the market improved on the last. Where the two disagreed by
+ * eight points the market was right both ways — picks the model rated
+ * higher came in 42% against its 54%, picks it rated lower came in 56%
+ * against its 44%. A coupon built on the model's own view was therefore
+ * built, systematically, on its errors. The model's fifth is where the
+ * news reading and the cross-league structure act; the price is the base.
+ */
 export const MODEL_CONFIGURATION_FALLBACKS = {
   configVersion: 'unversioned',
-  marketPriorWeight: 0.35,
+  marketPriorWeight: 0.8,
   poisson: { maxGoals: 10, shrinkage: 0.25, homeAdvantage: 1.12 },
 } as const;
 
@@ -576,31 +593,58 @@ export async function computeMatchPrediction(
    * points of win expectation between level sides — and a vague briefing is
    * scaled to nothing before it gets here.
    */
-  const leanPoints = (insight?.resultLean ?? 0) * INSIGHT_LEAN_POINTS;
+  const runModels = (withInsight: boolean): ModelOutput[] => {
+    const leanPoints = withInsight ? (insight?.resultLean ?? 0) * INSIGHT_LEAN_POINTS : 0;
+    const input = withInsight ? poissonInput : { ...poissonInput, insight: null };
+    const goals = withInsight ? expected : poissonLambdas(input);
+    return [
+      runEloModel({
+        homeRating: homeElo.rating + homeStrength + leanPoints,
+        awayRating: awayElo.rating + awayStrength - leanPoints,
+        homeMatchesPlayed: homeElo.matchesPlayed,
+        awayMatchesPlayed: awayElo.matchesPlayed,
+        homeAdvantage: config.elo.homeAdvantage,
+        expectedTotalGoals: goals.lambdaHome + goals.lambdaAway,
+      }),
+      runPoissonModel(input),
+      runFormModel({ home: homeForm, away: awayForm, venueWeight: 0.6 }),
+      runXgModel({
+        home: homeForm,
+        away: awayForm,
+        homeAdvantageMultiplier: config.poisson.homeAdvantage,
+      }),
+    ];
+  };
 
-  const models: ModelOutput[] = [
-    runEloModel({
-      homeRating: homeElo.rating + homeStrength + leanPoints,
-      awayRating: awayElo.rating + awayStrength - leanPoints,
-      homeMatchesPlayed: homeElo.matchesPlayed,
-      awayMatchesPlayed: awayElo.matchesPlayed,
-      homeAdvantage: config.elo.homeAdvantage,
-      expectedTotalGoals: expected.lambdaHome + expected.lambdaAway,
-    }),
-    runPoissonModel(poissonInput),
-    runFormModel({ home: homeForm, away: awayForm, venueWeight: 0.6 }),
-    runXgModel({
-      home: homeForm,
-      away: awayForm,
-      homeAdvantageMultiplier: config.poisson.homeAdvantage,
-    }),
-  ];
-
+  const models = runModels(true);
   const ensemble = runEnsemble(models, config.weights);
   if (ensemble.probabilities.size === 0) return null;
 
+  /**
+   * The news is applied after the market, not diluted by it.
+   *
+   * The final probability is four fifths market; folding the reading into
+   * the model's fifth would shrink a well-sourced "striker suspended" to a
+   * rounding error. The reading is exactly the information the price does
+   * not yet carry, so its effect is measured as the difference between the
+   * ensemble with and without it, and that difference is added whole once
+   * the model has been blended with the market. Each run is renormalised
+   * within its market groups, so the differences sum to zero across 1X2 and
+   * across each over/under pair, and the blended groups stay coherent.
+   */
+  let insightDelta: SelectionProbabilities | null = null;
+  if (insight) {
+    const baseline = runEnsemble(runModels(false), config.weights);
+    insightDelta = new Map();
+    for (const [code, withNews] of ensemble.probabilities) {
+      const without = baseline.probabilities.get(code);
+      if (without !== undefined) insightDelta.set(code, withNews.minus(without));
+    }
+  }
+
   return {
     probabilities: ensemble.probabilities,
+    insightDelta,
     models,
     modelAgreement: ensemble.modelAgreement,
     effectiveWeights: ensemble.effectiveWeights,
@@ -855,6 +899,20 @@ export async function runPredictions(
       quotes,
       config.marketPriorWeight,
     );
+    // The reading's effect rides on top of the blend, undiluted (see
+    // computeMatchPrediction). Only where the market was blended: elsewhere
+    // the model's own probability already carries it.
+    if (prediction.insightDelta) {
+      const blendedCodes = new Set(calibrated.calibratedGroups.flat());
+      for (const [code, delta] of prediction.insightDelta) {
+        if (!blendedCodes.has(code)) continue;
+        const current = calibrated.probabilities.get(code);
+        if (current === undefined) continue;
+        // The blend already carries the model's fifth of the delta.
+        const remainder = delta.times(config.marketPriorWeight);
+        calibrated.probabilities.set(code, clampProbability(current.plus(remainder)));
+      }
+    }
 
     const rows: Prisma.PredictionCreateManyInput[] = [];
 
