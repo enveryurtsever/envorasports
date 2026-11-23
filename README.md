@@ -1,12 +1,27 @@
-# EnvoraSports
+# EnvoraSports — Open-Source Football Prediction & Market-Intelligence Platform
 
-Football prediction and market-intelligence platform. Ingests fixtures, prices
-and historical results, runs an ensemble of statistical models, prices every
-market the bulletin actually offers, and assembles prediction sets that settle
-themselves once results land.
+<p align="center">
+  <strong>Self-hosted football analytics, statistical probability modeling, and odds market-intelligence engine built with Next.js 15, Prisma, and PostgreSQL.</strong><br/>
+  Ingests fixtures, live odds, and historical results; runs leakage-free statistical ensembles with news adjustments; builds self-settling prediction slates; and ships with a bilingual English/Turkish UI.
+</p>
 
-Bilingual: English is the source language and served unprefixed (`/matches`),
-Turkish is prefixed (`/tr/matches`).
+<p align="center">
+  <img src="https://img.shields.io/github/license/enveryurtsever/envorasports?color=22c55e" alt="MIT License" />
+  <img src="https://img.shields.io/badge/Next.js-15-000000?logo=next.js&logoColor=white" alt="Next.js 15" />
+  <img src="https://img.shields.io/badge/PostgreSQL-Prisma-336791?logo=postgresql&logoColor=white" alt="PostgreSQL and Prisma" />
+  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/i18n-EN%20%7C%20TR-0ea5e9" alt="English and Turkish" />
+</p>
+
+Bilingual by default: English is the source language and served unprefixed (`/matches`), Turkish is prefixed (`/tr/matches`).
+
+```mermaid
+flowchart LR
+    A[API-Football + The Odds API +<br/>football-data.co.uk] --> B[Append-Only Snapshots<br/>Elo, Form & Market Odds]
+    B --> C[Leakage-Free Ensemble<br/>+ News Reading Bounds]
+    C --> D[Market Pricing &<br/>Coupon / Slate Builder]
+    D --> E[Bilingual EN/TR Web UI<br/>& Auto-Settlement]
+```
 
 ---
 
@@ -117,3 +132,17 @@ floating point.
 
 Full design notes, index reasoning, leakage analysis, provider limitations and
 backtest findings: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+---
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and deployment checklist.
+
+## License
+
+Released under the [MIT License](LICENSE).

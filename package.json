@@ -1,6 +1,29 @@
 {
   "name": "envorasports",
-  "version": "0.1.0",
+  "version": "1.0.0",
+  "description": "Open-source football prediction and sports market-intelligence platform built with Next.js 15, Prisma, PostgreSQL, statistical Elo/Poisson models, backtesting, and bilingual EN/TR UI.",
+  "homepage": "https://github.com/enveryurtsever/envorasports",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/enveryurtsever/envorasports.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "football-predictions",
+    "sports-analytics",
+    "soccer-analytics",
+    "elo-rating",
+    "odds-api",
+    "backtesting",
+    "nextjs",
+    "nextjs15",
+    "prisma",
+    "postgresql",
+    "typescript",
+    "next-intl",
+    "self-hosted",
+    "open-source"
+  ],
   "private": true,
   "type": "module",
   "engines": {
